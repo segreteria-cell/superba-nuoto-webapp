@@ -1,11 +1,11 @@
-export default function Regolamenti() {
-  return (
-    <div className="flex items-center justify-center h-64">
-      <div className="text-center">
-        <p className="text-4xl mb-3 opacity-30">🚧</p>
-        <p className="text-sb-muted font-medium">Regolamenti</p>
-        <p className="text-sb-muted text-sm mt-1">In sviluppo</p>
-      </div>
-    </div>
-  )
-}
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { db, storage } from '../lib/firebase'
+import {
+  collection, addDoc, getDocs, deleteDoc, doc, query, orderBy,
+} from 'firebase/firestore'
+import {
+  ref, uploadBytesResumable, getDownloadURL, deleteObject,
+} from 'firebase/storage'
+import * as pdfjsLib from 'pdfjs-dist'
+
+pdfjsLib.GlobalWorke
