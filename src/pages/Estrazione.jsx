@@ -350,4 +350,32 @@ export default function Estrazione() {
                     {keyCols.map(c => (
                       <td key={c} className="px-3 py-1.5 whitespace-nowrap">
                         {c === 'posizione'   ? <span className="font-bold text-sb-blue">{r[c]}</span>
-                        : c === 'tempo_finale' 
+                        : c === 'tempo_finale' ? <span className="font-mono font-semibold text-sb-text">{r[c]}</span>
+                        : c === 'atleta'      ? <span className="font-medium text-sb-text">{r[c]}</span>
+                        : c === 'gara'        ? <span className="text-xs font-bold bg-sb-bg px-2 py-0.5 rounded text-sb-blue">{r[c]}</span>
+                        : <span className="text-sb-muted">{r[c] || '—'}</span>}
+                      </td>
+                    ))}
+                    {parzialiCols.map(c => (
+                      <td key={c} className="px-2 py-1.5 text-center whitespace-nowrap">
+                        {r[c]
+                          ? <span className="font-mono text-sb-text">{r[c]}</span>
+                          : <span className="text-sb-sep">·</span>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {filtered.length > 500 && (
+                  <tr><td colSpan={keyCols.length + parzialiCols.length}
+                    className="px-3 py-3 text-center text-xs text-sb-muted">
+                    Mostrate 500/{filtered.length} — usa i filtri
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
