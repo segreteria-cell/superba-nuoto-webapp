@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+
+/* Scrollbar sottile */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #ddeef8; }
+::-webkit-scrollbar-thumb { background: #b8d8ec; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #008db8; }
