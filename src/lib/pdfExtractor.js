@@ -45,13 +45,13 @@ const DIST_OK = new Set([50, 100, 200, 400, 800, 1500])
 function normSpace(s) {
   return (s || '')
     .replace(/\xa0/g, ' ').replace(/[–—]/g, '-')
-    .replace(/[’`]/g, "'")
+    .replace(/['`]/g, "'")
     .replace(/\s+/g, ' ').trim()
 }
 
 function normSoft(s) {
   return (s || '').toLowerCase()
-    .replace(/\xa0/g, ' ').replace(/[’`]/g, "'")
+    .replace(/\xa0/g, ' ').replace(/['`]/g, "'")
     .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
@@ -106,7 +106,6 @@ function timeToSeconds(t) {
     const [m, r] = x.split(':')
     return parseFloat(m) * 60 + parseFloat(r)
   }
-  // formato MM.SS.cc (due punti decimali)
   if ((x.match(/\./g) || []).length === 2) {
     const parts = x.split('.')
     try { return parseFloat(parts[0]) * 60 + parseFloat(parts[1] + '.' + parts[2]) }
@@ -359,7 +358,6 @@ function pickBySplitBase(dist, cumul, splitBase, maxParziali) {
 }
 
 // ─── Raccolta splits dalla riga sotto (fallback per gare corte) ───────────────
-// Se la riga atleta ha solo il tempo finale, prende i parziali dalla riga sotto.
 function collectSplitsFromBelow(allLines, idx, lastDate) {
   let jdx = idx + 1
   let checked = 0
@@ -372,7 +370,6 @@ function collectSplitsFromBelow(allLines, idx, lastDate) {
     if (societaTokensMatch(ln)) { jdx++; checked++; continue }
     const ts = extractTimes(ln)
     if (ts.length > 0) {
-      // Linea composta prevalentemente da tempi → sono i parziali
       const timeChars = ts.join('').length
       const totalChars = ln.replace(/\s/g, '').length
       if (totalChars > 0 && timeChars / totalChars > 0.5) return ts
@@ -405,7 +402,7 @@ async function pdfToLines(arrayBuffer, onProgress) {
       .filter(item => item.str?.trim())
       .map(item => ({
         ...item,
-        topFromTop: pageHeight - item.transform[5] - item.height,
+        topFromTop: pageHeight - item.transform[5] - (item.height || Math.abs(item.transform[3])),
       }))
     if (!items.length) continue
 
@@ -505,9 +502,7 @@ export async function extractPDF({
     if (!athleteParsed) continue
 
     const { pos, atleta, times: cumul } = athleteParsed
-    const dist = current.dist
-
-    // Filtro società
+    const dist = current.di
     let okSoc
     if (splitBase === 25 && [200, 400, 800, 1500].includes(dist)) {
       okSoc = matchSocietaSplit25Under(allLines, idx)
@@ -534,8 +529,6 @@ export async function extractPDF({
         for (const ts of filtered) finalCumul.push(...ts)
       }
     } else if (dist !== 50 && finalCumul.length === 1) {
-      // Fallback: splits su riga separata (formato genovagare.it)
-      // I parziali vengono PRIMA del tempo finale → prepend
       const splitsBelow = collectSplitsFromBelow(allLines, idx, lastDate)
       if (splitsBelow.length > 0) {
         finalCumul = [...splitsBelow, ...finalCumul]
@@ -545,7 +538,6 @@ export async function extractPDF({
     let [parziali, tempoFinale] = pickBySplitBase(dist, finalCumul, splitBase, maxParziali)
     if (dist === 1500 && finaleOverride) tempoFinale = finaleOverride
 
-    // Dedup (senza pos — FIX-8)
     const dedupKey = current.gara + '|' + (current.data_gara || '') + '|' + atleta + '|' + currentPhase
     if (seenRows.has(dedupKey)) continue
     seenRows.add(dedupKey)
@@ -562,6 +554,13 @@ export async function extractPDF({
       tempo_finale: tempoFinale,
     }
     parziali.forEach((t, i) => { if (t) row[parzialiCols[i]] = t })
+    rows.push(row)
+  }
+
+  log('✓ Estratti: ' + rows.length + ' risultati')
+  return rows
+}
+[parzialiCols[i]] = t })
     rows.push(row)
   }
 
