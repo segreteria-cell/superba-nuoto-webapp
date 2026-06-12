@@ -375,4 +375,7 @@ export default function Estrazione() {
             </table>
           </div>
         </>
-      
+          )}
+  </div>
+)
+}
