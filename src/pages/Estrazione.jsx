@@ -201,7 +201,7 @@ export default function Estrazione() {
             <label className="block text-xs text-sb-muted font-medium mb-1">Stagione</label>
             <select value={stagione} onChange={e => setStagione(e.target.value)}
               className="border border-sb-sep rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sb-blue">
-              {['2025/2026','2024/2025','2023/2024','2026/2027'].map(s => <option key={s}>{s}</option>)}
+              {['2026/2027','2025/2026','2024/2025','2023/2024'].map(s => <option key={s}>{s}</option>)}
             </select>
           </div>
 
