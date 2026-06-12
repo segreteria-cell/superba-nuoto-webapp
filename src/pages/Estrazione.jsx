@@ -1,322 +1,279 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
+import * as XLSX from 'xlsx'
 import { db } from '../lib/firebase'
 import { collection, doc, writeBatch, getDocs } from 'firebase/firestore'
-import { extractPDF, rowsToCSV } from '../lib/pdfExtractor'
 
-const COLS_SHOW = ['gara','sesso','data_gara','fase','posizione','atleta','societa','tempo_finale']
+// Colonne chiave sempre visibili
+const COLS_KEY = ['DATA','GARA','SESSO','POS.T','ATLETA/SQUADRA','ANNO','SOCIETA','TEMPO']
+// Colonne parziali: finiscono in 'm'
+const isParziale = c => /^\d+m$/.test(String(c||''))
 
-const TAG_COLORS = {
-  head: 'text-white font-bold',
-  ok:   'text-green-400',
-  err:  'text-red-400',
-  info: 'text-blue-300',
-  warn: 'text-yellow-400',
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array', cellText: true, raw: false })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+        resolve(rows)
+      } catch(err) { reject(err) }
+    }
+    reader.onerror = reject
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+function rowsToCSV(rows) {
+  if (!rows.length) return ''
+  const keys = Object.keys(rows[0])
+  const esc = v => `"${String(v??'').replace(/"/g,'""')}"`
+  return [keys.join(';'), ...rows.map(r => keys.map(k => esc(r[k])).join(';'))].join('\n')
+}
+
+function StatChip({ label, value, color = 'text-sb-blue' }) {
+  return (
+    <div className="bg-sb-bg rounded-xl px-4 py-3 text-center min-w-20">
+      <p className={`text-2xl font-bold ${color}`}>{value}</p>
+      <p className="text-xs text-sb-muted mt-0.5">{label}</p>
+    </div>
+  )
 }
 
 export default function Estrazione() {
-  const [files, setFiles]       = useState([])   // {name, buffer}
-  const [societa, setSocieta]   = useState('Superba Nuoto ssd')
-  const [split, setSplit]       = useState(50)
-  const [stagione, setStagione] = useState('2025/2026')
-  const [rows, setRows]         = useState([])
-  const [log, setLog]           = useState([])
-  const [running, setRunning]   = useState(false)
-  const [progress, setProgress] = useState({cur:0,tot:0})
-  const [saving, setSaving]     = useState(false)
-  const [savedCount, setSaved]  = useState(null)
-  const [filter, setFilter]     = useState({atleta:'',gara:''})
+  const [rows, setRows]           = useState([])
+  const [headers, setHeaders]     = useState([])
+  const [fileName, setFileName]   = useState('')
+  const [stagione, setStagione]   = useState('2025/2026')
+  const [filter, setFilter]       = useState({ atleta: '', gara: '', societa: '' })
+  const [saving, setSaving]       = useState(false)
+  const [savedCount, setSaved]    = useState(null)
+  const [dragging, setDragging]   = useState(false)
+  const [loading, setLoading]     = useState(false)
   const fileRef = useRef()
-  const logEndRef = useRef()
-  const cancelRef = useRef(false)
 
-  function addLog(msg, tag='info') {
-    setLog(p=>[...p,{msg,tag,id:Date.now()+Math.random()}])
-    setTimeout(()=>logEndRef.current?.scrollIntoView({behavior:'smooth'}),30)
+  async function loadFile(file) {
+    if (!file) return
+    setLoading(true)
+    setSaved(null)
+    try {
+      const data = await readFile(file)
+      setFileName(file.name)
+      setRows(data)
+      setHeaders(data.length ? Object.keys(data[0]) : [])
+    } catch(e) {
+      alert('Errore lettura file: ' + e.message)
+    } finally { setLoading(false) }
   }
 
-  function onFilePick(e) {
-    const picked=Array.from(e.target.files)
-    Promise.all(picked.map(f=>f.arrayBuffer().then(buf=>({name:f.name,buffer:buf}))))
-      .then(loaded=>{
-        setFiles(loaded)
-        setRows([]); setLog([]); setSaved(null)
-        addLog(`${loaded.length} file caricati: ${loaded.map(f=>f.name).join(', ')}`, 'ok')
-      })
-    e.target.value=''
-  }
+  const onDrop = useCallback(e => {
+    e.preventDefault(); setDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file) loadFile(file)
+  }, [])
 
-  async function runExtraction() {
-    if(!files.length) { addLog('Nessun PDF caricato.','warn'); return }
-    cancelRef.current=false
-    setRunning(true); setRows([]); setSaved(null)
-    addLog(`─── Estrazione ${files.length} PDF ───`,'head')
+  // Colonne parziali presenti nel file
+  const parzialiCols = headers.filter(isParziale)
+  const keyCols      = headers.filter(h => COLS_KEY.includes(h))
 
-    let allRows=[]
-    for(let i=0;i<files.length;i++) {
-      if(cancelRef.current) { addLog('Annullato.','warn'); break }
-      const f=files[i]
-      addLog(`[${i+1}/${files.length}] ${f.name}`,'head')
-      try {
-        const extracted=await extractPDF({
-          arrayBuffer: f.buffer,
-          filename: f.name,
-          societaFilter: societa,
-          splitBase: split,
-          onLog: msg=>addLog('  '+msg,'info'),
-          onProgress:(p,tot)=>setProgress({cur:p,tot}),
-        })
-        addLog(`  ✓ ${extracted.length} righe estratte`,'ok')
-        allRows=[...allRows,...extracted]
-      } catch(e) {
-        addLog(`  ✗ Errore: ${e.message}`,'err')
+  // Filtro
+  const filtered = rows.filter(r => {
+    const a = filter.atleta.toLowerCase()
+    const g = filter.gara.toLowerCase()
+    const s = filter.societa.toLowerCase()
+    const atleta = String(r['ATLETA/SQUADRA'] || '').toLowerCase()
+    const gara   = String(r['GARA'] || '').toLowerCase()
+    const soc    = String(r['SOCIETA'] || '').toLowerCase()
+    return (!a || atleta.includes(a)) && (!g || gara.includes(g)) && (!s || soc.includes(s))
+  })
+
+  const uniqueAtleti  = [...new Set(rows.map(r => r['ATLETA/SQUADRA']).filter(Boolean))].length
+  const uniqueGare    = [...new Set(rows.map(r => r['GARA']).filter(Boolean))].length
+  const uniqueSocieta = [...new Set(rows.map(r => r['SOCIETA']).filter(Boolean))].length
+
+  async function saveToFirebase() {
+    if (!rows.length) return
+    setSaving(true)
+    try {
+      const colRef = collection(db, 'risultati', stagione, 'righe')
+      // Cancella vecchi dati
+      const snap = await getDocs(colRef)
+      let del = writeBatch(db); let dc = 0
+      for (const d of snap.docs) {
+        del.delete(d.ref); dc++
+        if (dc === 400) { await del.commit(); del = writeBatch(db); dc = 0 }
       }
-    }
-    setRows(allRows)
-    setProgress({cur:0,tot:0})
-    setRunning(false)
-    if(allRows.length) addLog(`Totale: ${allRows.length} righe`,'ok')
+      if (dc > 0) await del.commit()
+      // Scrivi nuovi
+      let wb = writeBatch(db); let wc = 0
+      for (const row of rows) {
+        wb.set(doc(colRef), { ...row, _stagione: stagione })
+        wc++
+        if (wc === 400) { await wb.commit(); wb = writeBatch(db); wc = 0 }
+      }
+      if (wc > 0) await wb.commit()
+      setSaved(rows.length)
+    } catch(e) { alert('Errore Firebase: ' + e.message) }
+    finally { setSaving(false) }
   }
 
   function downloadCSV() {
-    if(!rows.length) return
-    const csv=rowsToCSV(rows)
-    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'})
-    const a=document.createElement('a')
-    a.href=URL.createObjectURL(blob)
-    a.download=`Superba_Risultati.csv`
+    const csv = '﻿' + rowsToCSV(rows)
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    a.download = fileName.replace(/\.(xlsx|xls)$/i, '') + '_export.csv'
     a.click(); URL.revokeObjectURL(a.href)
   }
 
-  async function saveToFirebase() {
-    if(!rows.length) return
-    setSaving(true)
-    try {
-      const colRef=collection(db,'risultati',stagione,'righe')
-      const snap=await getDocs(colRef)
-      let db1=writeBatch(db); let dc=0
-      for(const d of snap.docs) {
-        db1.delete(d.ref); dc++
-        if(dc===400){await db1.commit();db1=writeBatch(db);dc=0}
-      }
-      if(dc>0) await db1.commit()
-      let wb=writeBatch(db); let wc=0
-      for(const row of rows) {
-        wb.set(doc(colRef),{...row,_stagione:stagione}); wc++
-        if(wc===400){await wb.commit();wb=writeBatch(db);wc=0}
-      }
-      if(wc>0) await wb.commit()
-      setSaved(rows.length)
-      addLog(`✓ ${rows.length} righe salvate su Firebase (${stagione})`,'ok')
-    } catch(e) {
-      addLog('Errore Firebase: '+e.message,'err')
-    } finally { setSaving(false) }
-  }
-
-  const filtered=rows.filter(r=>
-    (!filter.atleta||r.atleta?.toLowerCase().includes(filter.atleta.toLowerCase()))&&
-    (!filter.gara||r.gara?.toLowerCase().includes(filter.gara.toLowerCase()))
-  )
-
-  const uniqueAtleti=[...new Set(rows.map(r=>r.atleta).filter(Boolean))].length
-  const uniqueGare=[...new Set(rows.map(r=>r.gara).filter(Boolean))].length
-
   return (
-    <div className="flex flex-col gap-3 h-full" style={{minHeight:0}}>
+    <div className="flex flex-col gap-3" style={{ minHeight: 0 }}>
 
-      {/* Impostazioni */}
+      {/* Header */}
       <div className="bg-sb-panel rounded-2xl border border-sb-sep shadow-sm overflow-hidden">
-        <div className="h-0.5 bg-sb-aqua"/>
-        <div className="px-5 pt-4 pb-2">
-          <p className="text-xs font-bold text-sb-aqua uppercase tracking-wider mb-3">⚙ Impostazioni Estrazione</p>
-          <div className="flex flex-wrap gap-4 items-end">
+        <div className="h-0.5 bg-sb-aqua" />
+        <div className="px-5 py-4 flex flex-wrap items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-sb-text mb-0.5">Carica file estratto dal Python</p>
+            <p className="text-xs text-sb-muted">
+              File <code className="bg-sb-bg px-1 rounded">.xlsx</code> o <code className="bg-sb-bg px-1 rounded">.csv</code> prodotto dall'app locale
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs text-sb-muted font-medium mb-1">Stagione</label>
+            <select value={stagione} onChange={e => setStagione(e.target.value)}
+              className="border border-sb-sep rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sb-blue">
+              {['2025/2026','2024/2025','2023/2024','2026/2027'].map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <button onClick={() => fileRef.current?.click()} disabled={loading}
+            className="px-5 py-2 bg-sb-blue text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50">
+            {loading ? '⏳ Caricamento…' : '📂 Scegli file'}
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+            onChange={e => loadFile(e.target.files[0])} />
+        </div>
+      </div>
 
-            {/* Sorgente PDF */}
-            <div className="flex-1 min-w-48">
-              <label className="block text-xs text-sb-muted font-medium mb-1">Sorgente PDF</label>
-              <div className="flex gap-2">
-                <div className="flex-1 border border-sb-sep rounded-lg px-3 py-1.5 text-sm text-sb-muted bg-sb-bg truncate">
-                  {files.length===0 ? 'Nessun file selezionato'
-                    : files.length===1 ? files[0].name
-                    : `${files.length} file PDF`}
-                </div>
-                <button onClick={()=>fileRef.current?.click()}
-                  className="px-4 py-1.5 bg-sb-blue text-white text-sm font-medium rounded-lg hover:bg-blue-700 whitespace-nowrap">
-                  📂 Sfoglia
-                </button>
-                <input ref={fileRef} type="file" accept=".pdf" multiple className="hidden" onChange={onFilePick}/>
+      {/* Drop zone */}
+      {rows.length === 0 && (
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onClick={() => fileRef.current?.click()}
+          className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed cursor-pointer transition-all py-20
+            ${dragging ? 'border-sb-blue bg-blue-50' : 'border-sb-sep bg-sb-panel hover:border-sb-blue/50'}`}
+        >
+          <p className="text-4xl mb-3 opacity-30">📊</p>
+          <p className="text-sb-muted font-medium text-sm">Trascina il file xlsx qui o clicca per sceglierlo</p>
+          <p className="text-sb-muted text-xs mt-1">Output dell'app Python — contiene parziali e tutti i dati di gara</p>
+        </div>
+      )}
+
+      {/* Dati */}
+      {rows.length > 0 && (
+        <>
+          {/* Stats + azioni */}
+          <div className="bg-sb-panel rounded-2xl border border-sb-sep shadow-sm px-5 py-4">
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-sb-text truncate">📊 {fileName}</p>
+                <p className="text-xs text-sb-muted">{rows.length} righe · {parzialiCols.length} colonne parziali</p>
               </div>
+              {savedCount !== null && (
+                <span className="text-xs bg-green-100 text-green-700 font-semibold px-3 py-1 rounded-full">
+                  ✓ {savedCount} righe su Firebase
+                </span>
+              )}
+              <button onClick={downloadCSV}
+                className="px-4 py-2 border border-sb-sep text-sm font-medium text-sb-text rounded-lg hover:bg-sb-bg">
+                ⬇ CSV
+              </button>
+              <button onClick={saveToFirebase} disabled={saving}
+                className="px-5 py-2 bg-sb-green text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+                {saving ? '⏳ Salvataggio…' : '🔥 Salva su Firebase'}
+              </button>
+              <button onClick={() => { setRows([]); setFileName(''); setSaved(null) }}
+                className="px-3 py-2 text-sm text-sb-muted border border-sb-sep rounded-lg hover:bg-sb-bg">
+                Svuota
+              </button>
             </div>
-
-            {/* Società */}
-            <div className="min-w-52">
-              <label className="block text-xs text-sb-muted font-medium mb-1">Società da estrarre</label>
-              <input value={societa} onChange={e=>setSocieta(e.target.value)}
-                className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue"/>
-            </div>
-
-            {/* Split */}
-            <div>
-              <label className="block text-xs text-sb-muted font-medium mb-1">Split parziali</label>
-              <div className="flex gap-1 bg-sb-bg rounded-lg p-1 border border-sb-sep">
-                {[50,25].map(v=>(
-                  <button key={v} onClick={()=>setSplit(v)}
-                    className={`px-4 py-1 rounded text-sm font-medium transition-all
-                      ${split===v?'bg-sb-blue text-white shadow':'text-sb-muted hover:text-sb-text'}`}>
-                    {v}m
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Stagione */}
-            <div>
-              <label className="block text-xs text-sb-muted font-medium mb-1">Stagione (Firebase)</label>
-              <select value={stagione} onChange={e=>setStagione(e.target.value)}
-                className="border border-sb-sep rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sb-blue">
-                {['2025/2026','2024/2025','2023/2024','2026/2027'].map(s=><option key={s}>{s}</option>)}
-              </select>
+            <div className="grid grid-cols-4 gap-3">
+              <StatChip label="Righe"    value={rows.length}    color="text-sb-blue" />
+              <StatChip label="Atleti"   value={uniqueAtleti}   color="text-sb-aqua" />
+              <StatChip label="Gare"     value={uniqueGare}     color="text-sb-green" />
+              <StatChip label="Società"  value={uniqueSocieta}  color="text-sb-muted" />
             </div>
           </div>
-        </div>
 
-        {/* Barra avanzamento + pulsanti */}
-        <div className="px-5 pb-4 pt-2 border-t border-sb-sep mt-2">
-          <div className="flex items-center gap-3">
-            <button onClick={runExtraction} disabled={running||!files.length}
-              className="px-6 py-2 bg-sb-green text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-40 transition-opacity">
-              {running ? '⏳ Estrazione in corso…' : '▶ Avvia Estrazione'}
-            </button>
-            {running && (
-              <button onClick={()=>{cancelRef.current=true}}
-                className="px-4 py-2 text-sm text-red-400 bg-sb-dark rounded-lg hover:bg-red-950 border border-red-900">
-                ✕ Annulla
+          {/* Filtri */}
+          <div className="bg-sb-panel rounded-xl border border-sb-sep px-4 py-3 flex flex-wrap gap-3 items-end">
+            {[['atleta','Atleta'],['gara','Gara'],['societa','Società']].map(([k,lbl]) => (
+              <div key={k} className="flex-1 min-w-32">
+                <label className="block text-xs text-sb-muted font-medium mb-1">{lbl}</label>
+                <input value={filter[k]} onChange={e => setFilter(p => ({ ...p, [k]: e.target.value }))}
+                  placeholder="Filtra…"
+                  className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue" />
+              </div>
+            ))}
+            {Object.values(filter).some(Boolean) && (
+              <button onClick={() => setFilter({ atleta:'', gara:'', societa:'' })}
+                className="px-3 py-1.5 text-xs text-sb-muted border border-sb-sep rounded-lg hover:bg-sb-bg">
+                ✕ Reset
               </button>
             )}
-            {rows.length>0 && !running && (
-              <>
-                <button onClick={downloadCSV}
-                  className="px-4 py-2 bg-sb-panel border border-sb-sep text-sm font-medium text-sb-text rounded-lg hover:bg-sb-bg">
-                  ⬇ Scarica CSV
-                </button>
-                <button onClick={saveToFirebase} disabled={saving}
-                  className="px-4 py-2 bg-orange-500 text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                  {saving ? '⏳ Salvataggio…' : '🔥 Salva su Firebase'}
-                </button>
-                {savedCount!==null && (
-                  <span className="text-xs bg-green-100 text-green-700 font-semibold px-3 py-1 rounded-full">
-                    ✓ {savedCount} righe salvate
-                  </span>
-                )}
-              </>
-            )}
-            {progress.tot>0 && (
-              <div className="flex-1 flex items-center gap-2 ml-2">
-                <div className="flex-1 h-2 bg-sb-dark rounded-full overflow-hidden">
-                  <div className="h-full bg-sb-blue rounded-full transition-all"
-                    style={{width:`${Math.round(progress.cur/progress.tot*100)}%`}}/>
-                </div>
-                <span className="text-xs text-sb-muted w-20 text-right">
-                  Pag. {progress.cur}/{progress.tot}
-                </span>
-              </div>
-            )}
+            <span className="text-xs text-sb-muted ml-auto">{filtered.length}/{rows.length}</span>
           </div>
-        </div>
-      </div>
 
-      {/* Body: log + risultati */}
-      <div className="flex gap-3 flex-1 min-h-0">
-
-        {/* Log */}
-        <div className="w-80 flex-shrink-0 bg-sb-panel border border-sb-sep rounded-2xl flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-sb-sep">
-            <p className="text-xs font-bold text-sb-aqua uppercase tracking-wider">Log Estrazione</p>
-            <button onClick={()=>setLog([])} className="text-xs text-sb-muted hover:text-white">Pulisci</button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
-            {log.length===0
-              ? <p className="text-sb-muted">—</p>
-              : log.map(e=>(
-                  <p key={e.id} className={TAG_COLORS[e.tag]||'text-sb-muted'}>{e.msg}</p>
-                ))
-            }
-            <div ref={logEndRef}/>
-          </div>
-        </div>
-
-        {/* Risultati */}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0 gap-2">
-          {rows.length>0 && (
-            <>
-              {/* Mini stats + filtri */}
-              <div className="bg-sb-panel border border-sb-sep rounded-xl px-4 py-2 flex flex-wrap items-center gap-4">
-                <span className="text-sm font-bold text-sb-text">{rows.length} righe</span>
-                <span className="text-xs text-sb-muted">{uniqueAtleti} atleti · {uniqueGare} gare</span>
-                <div className="flex gap-2 ml-auto">
-                  {[['atleta','Atleta'],['gara','Gara']].map(([k,lbl])=>(
-                    <div key={k} className="flex items-center gap-1">
-                      <span className="text-xs text-sb-muted">{lbl}:</span>
-                      <input value={filter[k]} onChange={e=>setFilter(p=>({...p,[k]:e.target.value}))}
-                        placeholder="Filtra…"
-                        className="border border-sb-sep rounded px-2 py-1 text-xs w-28 focus:outline-none focus:ring-1 focus:ring-sb-blue"/>
-                    </div>
+          {/* Tabella */}
+          <div className="bg-sb-panel rounded-2xl border border-sb-sep shadow-sm overflow-auto" style={{ maxHeight: '460px' }}>
+            <table className="w-full text-xs min-w-max">
+              <thead className="sticky top-0 z-10">
+                <tr className="border-b border-sb-sep bg-sb-bg">
+                  {keyCols.map(c => (
+                    <th key={c} className="px-3 py-2 text-left font-semibold text-sb-muted whitespace-nowrap uppercase tracking-wide">{c}</th>
                   ))}
-                  {(filter.atleta||filter.gara) && (
-                    <button onClick={()=>setFilter({atleta:'',gara:''})}
-                      className="text-xs text-sb-muted hover:text-sb-text px-1">✕</button>
-                  )}
-                  <span className="text-xs text-sb-muted">{filtered.length}/{rows.length}</span>
-                </div>
-              </div>
-
-              {/* Tabella */}
-              <div className="flex-1 bg-sb-panel border border-sb-sep rounded-2xl overflow-auto">
-                <table className="w-full text-xs min-w-max">
-                  <thead className="sticky top-0 z-10">
-                    <tr className="border-b border-sb-sep bg-sb-bg">
-                      {COLS_SHOW.map(c=>(
-                        <th key={c} className="px-3 py-2 text-left font-semibold text-sb-muted uppercase tracking-wide whitespace-nowrap">
-                          {c.replace(/_/g,' ')}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.slice(0,500).map((r,i)=>(
-                      <tr key={i} className={`border-b border-sb-sep/50 ${i%2===0?'bg-white':'bg-sb-panel'}`}>
-                        <td className="px-3 py-1.5">
-                          <span className="text-xs font-bold bg-sb-bg px-2 py-0.5 rounded text-sb-blue">{r.gara}</span>
-                        </td>
-                        <td className="px-3 py-1.5 text-sb-muted">{r.sesso}</td>
-                        <td className="px-3 py-1.5 text-sb-muted">{r.data_gara}</td>
-                        <td className="px-3 py-1.5 text-sb-muted">{r.fase}</td>
-                        <td className="px-3 py-1.5 font-bold text-sb-blue">{r.posizione}</td>
-                        <td className="px-3 py-1.5 font-medium text-sb-text whitespace-nowrap">{r.atleta}</td>
-                        <td className="px-3 py-1.5 text-sb-muted whitespace-nowrap">{r.societa}</td>
-                        <td className="px-3 py-1.5 font-mono font-semibold text-sb-text">{r.tempo_finale}</td>
-                      </tr>
+                  {parzialiCols.map(c => (
+                    <th key={c} className="px-2 py-2 text-center font-semibold text-sb-aqua whitespace-nowrap">{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 500).map((r, i) => (
+                  <tr key={i} className={`border-b border-sb-sep/50 ${i%2===0?'bg-white':'bg-sb-panel'}`}>
+                    {keyCols.map(c => (
+                      <td key={c} className="px-3 py-1.5 whitespace-nowrap">
+                        {c === 'POS.T'
+                          ? <span className="font-bold text-sb-blue">{r[c]}</span>
+                          : c === 'TEMPO'
+                          ? <span className="font-mono font-semibold text-sb-text">{r[c]}</span>
+                          : c === 'ATLETA/SQUADRA'
+                          ? <span className="font-medium text-sb-text">{r[c]}</span>
+                          : c === 'GARA'
+                          ? <span className="text-xs font-bold bg-sb-bg px-2 py-0.5 rounded text-sb-blue">{r[c]}</span>
+                          : <span className="text-sb-muted">{r[c] || '—'}</span>}
+                      </td>
                     ))}
-                    {filtered.length>500&&(
-                      <tr><td colSpan={8} className="px-3 py-3 text-center text-xs text-sb-muted">
-                        Mostrate 500/{filtered.length} — usa i filtri
-                      </td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-          {rows.length===0 && !running && (
-            <div className="flex-1 flex items-center justify-center bg-sb-panel border border-sb-sep rounded-2xl">
-              <div className="text-center">
-                <p className="text-4xl mb-3 opacity-20">⚙</p>
-                <p className="text-sb-muted text-sm font-medium">Carica uno o più PDF e clicca "Avvia Estrazione"</p>
-                <p className="text-sb-muted text-xs mt-1">PDF da genovagare.it, FIN, Criteria o Ligure</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+                    {parzialiCols.map(c => (
+                      <td key={c} className="px-2 py-1.5 text-center whitespace-nowrap">
+                        {r[c]
+                          ? <span className="font-mono text-sb-text text-xs">{r[c]}</span>
+                          : <span className="text-sb-sep">·</span>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {filtered.length > 500 && (
+                  <tr><td colSpan={keyCols.length + parzialiCols.length}
+                    className="px-3 py-3 text-center text-xs text-sb-muted">
+                    Mostrate 500/{filtered.length} — usa i filtri
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   )
 }
