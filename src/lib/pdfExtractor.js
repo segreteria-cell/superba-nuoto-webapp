@@ -559,3 +559,4 @@ export async function extractPDF({
 
   log('✓ Estratti: ' + rows.length + ' risultati')
   return rows
+}
