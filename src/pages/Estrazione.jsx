@@ -152,7 +152,7 @@ export default function Estrazione() {
     if (!rows.length) return
     setSaving(true)
     try {
-      const colRef = collection(db, 'risultati', stagione, 'righe')
+      const colRef = collection(db, 'risultati', stagione.replace(/\//g, '-'), 'righe')
       const snap = await getDocs(colRef)
       let del = writeBatch(db); let dc = 0
       for (const d of snap.docs) {
@@ -375,7 +375,4 @@ export default function Estrazione() {
             </table>
           </div>
         </>
-      )}
-    </div>
-  )
-}
+      
