@@ -560,10 +560,3 @@ export async function extractPDF({
   log('✓ Estratti: ' + rows.length + ' risultati')
   return rows
 }
-[parzialiCols[i]] = t })
-    rows.push(row)
-  }
-
-  log('✓ Estratti: ' + rows.length + ' risultati')
-  return rows
-}
