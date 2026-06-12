@@ -358,10 +358,37 @@ function pickBySplitBase(dist, cumul, splitBase, maxParziali) {
   return [parziali, finale]
 }
 
+// ─── Raccolta splits dalla riga sotto (fallback per gare corte) ───────────────
+// Se la riga atleta ha solo il tempo finale, prende i parziali dalla riga sotto.
+function collectSplitsFromBelow(allLines, idx, lastDate) {
+  let jdx = idx + 1
+  let checked = 0
+  while (jdx < allLines.length && checked < 4) {
+    const ln = allLines[jdx]
+    if (!ln || RE_PUBBLICATA.test(ln)) break
+    if (looksLikeHeaderLine(ln)) break
+    const ap = parseAthleteLine(ln)
+    if (ap && ap.times.length > 0) break
+    if (societaTokensMatch(ln)) { jdx++; checked++; continue }
+    const ts = extractTimes(ln)
+    if (ts.length > 0) {
+      // Linea composta prevalentemente da tempi → sono i parziali
+      const timeChars = ts.join('').length
+      const totalChars = ln.replace(/\s/g, '').length
+      if (totalChars > 0 && timeChars / totalChars > 0.5) return ts
+    }
+    break
+  }
+  return []
+}
+
 // ─── PDF → righe testo ────────────────────────────────────────────────────────
-// Usa clustering con tolleranza 3pt: copre le piccole differenze di baseline
-// tra testo nominativo (sinistra) e tempi (destra) nella stessa riga visuale.
-const Y_TOL = 3
+// NOTA CRITICA: pdfjs usa coordinate baseline (dal basso), mentre pdfplumber
+// usa coordinate TOP (dall'alto). Le due righe "atleta" e "anno/club" hanno
+// baseline quasi identica (~0.05pt di diff) ma top diversa (~0.91pt di diff).
+// Formula corretta: topFromTop = pageHeight - transform[5] - item.height
+// Con Y_TOL=0.7pt (< 0.91) si separano esattamente come fa pdfplumber con 0.6pt.
+const Y_TOL = 0.7
 
 async function pdfToLines(arrayBuffer, onProgress) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
@@ -370,36 +397,41 @@ async function pdfToLines(arrayBuffer, onProgress) {
   for (let p = 1; p <= pdf.numPages; p++) {
     if (onProgress) onProgress(p, pdf.numPages)
     const page = await pdf.getPage(p)
+    const pageHeight = page.view[3]  // altezza pagina in punti (es. 842)
     const content = await page.getTextContent()
 
-    // Raccogli items non vuoti
-    const items = content.items.filter(item => item.str?.trim())
+    // Calcola topFromTop = coordinata TOP dall'alto (come pdfplumber)
+    const items = content.items
+      .filter(item => item.str?.trim())
+      .map(item => ({
+        ...item,
+        topFromTop: pageHeight - item.transform[5] - item.height,
+      }))
     if (!items.length) continue
 
-    // Clustering per riga con tolleranza Y_TOL
-    const rowGroups = []  // [{sumY, count, items}]
+    // Ordina top→bottom (topFromTop crescente = inizio pagina prima)
+    items.sort((a, b) => a.topFromTop - b.topFromTop)
+
+    // Sliding window: se item è più di Y_TOL sotto la riga corrente → nuova riga
+    const rows = []
+    let curRow = null
     for (const item of items) {
-      const y = item.transform[5]
-      let matched = null
-      for (const grp of rowGroups) {
-        if (Math.abs(grp.sumY / grp.count - y) <= Y_TOL) { matched = grp; break }
-      }
-      if (matched) {
-        matched.items.push(item)
-        matched.sumY += y
-        matched.count++
+      const y = item.topFromTop
+      if (curRow === null || y - curRow.avgTop > Y_TOL) {
+        curRow = { avgTop: y, sumTop: y, count: 1, items: [item] }
+        rows.push(curRow)
       } else {
-        rowGroups.push({ sumY: y, count: 1, items: [item] })
+        curRow.items.push(item)
+        curRow.sumTop += y
+        curRow.count++
+        curRow.avgTop = curRow.sumTop / curRow.count
       }
     }
 
-    // Ordina gruppi top→bottom (y decrescente in PDF coords)
-    rowGroups.sort((a, b) => b.sumY / b.count - a.sumY / a.count)
-
     const seen = new Set()
-    for (const grp of rowGroups) {
-      grp.items.sort((a, b) => a.transform[4] - b.transform[4])
-      const text = normSpace(grp.items.map(i => i.str).join(' '))
+    for (const row of rows) {
+      row.items.sort((a, b) => a.transform[4] - b.transform[4])  // sinistra→destra
+      const text = normSpace(row.items.map(i => i.str).join(' '))
       if (!text) continue
       const key = normSoft(text)
       if (seen.has(key)) continue
@@ -500,6 +532,13 @@ export async function extractPDF({
         for (const ts of filtered) { if (take) finalCumul.push(...ts); take = !take }
       } else {
         for (const ts of filtered) finalCumul.push(...ts)
+      }
+    } else if (dist !== 50 && finalCumul.length === 1) {
+      // Fallback: splits su riga separata (formato genovagare.it)
+      // I parziali vengono PRIMA del tempo finale → prepend
+      const splitsBelow = collectSplitsFromBelow(allLines, idx, lastDate)
+      if (splitsBelow.length > 0) {
+        finalCumul = [...splitsBelow, ...finalCumul]
       }
     }
 
