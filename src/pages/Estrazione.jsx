@@ -3,15 +3,45 @@ import { extractPDF } from '../lib/pdfExtractor'
 import { db } from '../lib/firebase'
 import { collection, doc, writeBatch, getDocs } from 'firebase/firestore'
 
-// Colonne chiave sempre visibili
+// Colonne chiave sempre visibili nella tabella interna
 const COLS_KEY = ['gara', 'sesso', 'data_gara', 'posizione', 'atleta', 'societa', 'tempo_finale']
-const isParziale = c => /^parziale_\d+m$/.test(String(c || ''))
+const isParziale = c => /^\d+m$/.test(String(c || ''))
+
+// Colonne parziali template (50m, 100m, ... 1500m)
+const SPLIT_COLS = Array.from({ length: 30 }, (_, i) => ((i + 1) * 50) + 'm')
+
+// Mappa campo interno → nome colonna template Excel
+const COL_MAP = {
+  data_gara:    'DATA',
+  sesso:        'SESSO',
+  gara:         'GARA',
+  posizione:    'POS.T',
+  atleta:       'ATLETA/SQUADRA',
+  societa:      'SOCIETA',
+  tempo_finale: 'TEMPO',
+}
+
+// Tutte le colonne del template nell'ordine corretto
+const TEMPLATE_COLS = [
+  'DATA','LUOGO','VASCA','CATEG','SESSO','AGEGROUP','GARA',
+  'POS.T','BATT','CORSIA','POS.B','CODICE','ATLETA/SQUADRA','Staf',
+  'ANNO','NAZ','CODSOC','SOCIETA','ISCRIZ','ISCRIZ_MILL',
+  'TEMPO','TEMPO_MILL','DIFF','DIFF2','RT',
+  ...SPLIT_COLS,
+]
 
 function rowsToCSV(rows) {
   if (!rows.length) return ''
-  const keys = Object.keys(rows[0])
   const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"'
-  return [keys.join(';'), ...rows.map(r => keys.map(k => esc(r[k])).join(';'))].join('\n')
+  // Inverti la mappa per lookup veloce
+  const inv = Object.fromEntries(Object.entries(COL_MAP).map(([k,v]) => [v, k]))
+  const lines = rows.map(r => {
+    return TEMPLATE_COLS.map(col => {
+      const internalKey = inv[col] || col  // prova la mappa inversa, poi il nome diretto
+      return esc(r[internalKey] ?? '')
+    }).join(';')
+  })
+  return [TEMPLATE_COLS.join(';'), ...lines].join('\n')
 }
 
 function StatChip({ label, value, color = 'text-sb-blue' }) {
@@ -81,7 +111,14 @@ export default function Estrazione() {
         addLog('Nessun risultato estratto. Verifica che il PDF contenga "Superba Nuoto" come testo selezionabile.', 'warn')
       }
       setRows(extracted)
-      setHeaders(extracted.length ? Object.keys(extracted[0]) : [])
+      // Raccogli TUTTE le colonne da tutti i risultati (non solo il primo)
+      if (extracted.length) {
+        const allKeys = new Set()
+        extracted.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)))
+        setHeaders([...allKeys])
+      } else {
+        setHeaders([])
+      }
     } catch (e) {
       addLog('Errore estrazione: ' + e.message, 'err')
     } finally {
@@ -96,7 +133,7 @@ export default function Estrazione() {
     if (file) loadFile(file)
   }, [splitBase]) // eslint-disable-line
 
-  const parzialiCols = headers.filter(isParziale)
+  const parzialiCols = headers.filter(isParziale).sort((a,b) => parseInt(a) - parseInt(b))
   const keyCols      = headers.filter(h => COLS_KEY.includes(h))
 
   const filtered = rows.filter(r => {

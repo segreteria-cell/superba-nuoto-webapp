@@ -457,7 +457,7 @@ export async function extractPDF({
   })
   log('  Righe ricostruite: ' + allLines.length)
 
-  const parzialiCols = Array.from({ length: maxParziali }, (_, i) => 'parziale_' + ((i + 1) * 50) + 'm')
+  const parzialiCols = Array.from({ length: maxParziali }, (_, i) => ((i + 1) * 50) + 'm')
 
   const rows = []
   const seenRows = new Set()
@@ -554,6 +554,13 @@ export async function extractPDF({
       tempo_finale: tempoFinale,
     }
     parziali.forEach((t, i) => { if (t) row[parzialiCols[i]] = t })
+    rows.push(row)
+  }
+
+  log('✓ Estratti: ' + rows.length + ' risultati')
+  return rows
+}
+[parzialiCols[i]] = t })
     rows.push(row)
   }
 
