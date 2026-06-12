@@ -1,26 +1,13 @@
 import { useState, useRef, useCallback } from "react"
 import { PDFDocument } from "pdf-lib"
 
-// ─── CORS proxy con fallback automatico ────────────────────────────────────────
-const PROXIES = [
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://thingproxy.freeboard.io/fetch/${url}`,
-]
+// ─── Cloudflare Worker proxy ───────────────────────────────────────────────────
+const WORKER = "https://nuoto-proxy.segreteria-62e.workers.dev"
 
-async function fetchWithFallback(url, opts = {}) {
-  let lastErr
-  for (const proxy of PROXIES) {
-    try {
-      const res = await fetch(proxy(url), opts)
-      if (res.status === 403 || res.status === 429) continue
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res
-    } catch (e) {
-      lastErr = e
-    }
-  }
-  throw lastErr ?? new Error("Tutti i proxy falliti")
+async function fetchWithFallback(url) {
+  const res = await fetch(`${WORKER}?url=${encodeURIComponent(url)}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res
 }
 
 // ─── Pattern di esclusione (come nell'app Python) ──────────────────────────────
