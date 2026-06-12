@@ -502,7 +502,7 @@ export async function extractPDF({
     if (!athleteParsed) continue
 
     const { pos, atleta, times: cumul } = athleteParsed
-    const dist = current.di
+    const dist = current.dist
     let okSoc
     if (splitBase === 25 && [200, 400, 800, 1500].includes(dist)) {
       okSoc = matchSocietaSplit25Under(allLines, idx)
@@ -559,4 +559,3 @@ export async function extractPDF({
 
   log('✓ Estratti: ' + rows.length + ' risultati')
   return rows
-}
