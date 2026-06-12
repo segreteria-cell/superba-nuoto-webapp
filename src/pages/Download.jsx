@@ -1,16 +1,31 @@
 import { useState, useRef, useCallback } from "react"
 import { PDFDocument } from "pdf-lib"
 
-// ─── CORS proxy ────────────────────────────────────────────────────────────────
-const PROXY = "https://corsproxy.io/?"
+// ─── CORS proxy con fallback automatico ────────────────────────────────────────
+const PROXIES = [
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+]
+
+async function fetchWithFallback(url, opts = {}) {
+  let lastErr
+  for (const proxy of PROXIES) {
+    try {
+      const res = await fetch(proxy(url), opts)
+      if (res.status === 403 || res.status === 429) continue
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr ?? new Error("Tutti i proxy falliti")
+}
 
 // ─── Pattern di esclusione (come nell'app Python) ──────────────────────────────
 const ESCLUDI = /elenco|iscrit|batterie|piano|vasca|classifica|riepilog|tabella|orari|^1\.pdf$|^2\.pdf$|^3\.pdf$/i
 const STAFFETTA = /4x/i
-
-function proxify(url) {
-  return PROXY + encodeURIComponent(url)
-}
 
 function extractPdfLinks(html, pageUrl) {
   const base = pageUrl.substring(0, pageUrl.lastIndexOf("/") + 1)
@@ -80,8 +95,7 @@ export default function Download() {
     setAnalyzing(true)
     addLog(`Analisi: ${trimmed}`, "head")
     try {
-      const res = await fetch(proxify(trimmed))
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const res = await fetchWithFallback(trimmed)
       const html = await res.text()
       const { links: found, luogo } = extractPdfLinks(html, trimmed)
       const count = Object.keys(found).length
@@ -125,8 +139,7 @@ export default function Download() {
       setProgress({ cur: i + 1, tot: selectedLinks.length, label: `Scaricando ${filename}…` })
       addLog(`[${i + 1}/${selectedLinks.length}] ${filename}`, "info")
       try {
-        const res = await fetch(proxify(info.url))
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const res = await fetchWithFallback(info.url)
         const buf = await res.arrayBuffer()
         pdfBytes.push({ filename, buf })
         addLog(`  ✓ ${(buf.byteLength / 1024).toFixed(0)} KB`, "ok")
