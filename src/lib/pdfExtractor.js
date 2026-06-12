@@ -359,6 +359,10 @@ function pickBySplitBase(dist, cumul, splitBase, maxParziali) {
 }
 
 // ─── PDF → righe testo ────────────────────────────────────────────────────────
+// Usa clustering con tolleranza 3pt: copre le piccole differenze di baseline
+// tra testo nominativo (sinistra) e tempi (destra) nella stessa riga visuale.
+const Y_TOL = 3
+
 async function pdfToLines(arrayBuffer, onProgress) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
   const allLines = []
@@ -368,22 +372,34 @@ async function pdfToLines(arrayBuffer, onProgress) {
     const page = await pdf.getPage(p)
     const content = await page.getTextContent()
 
-    // Raggruppa per y con tolleranza ~0.5pt (come pdfplumber word-box y_tolerance=0.6)
-    const byRow = {}
-    for (const item of content.items) {
-      if (!item.str) continue
-      const y = Math.round(item.transform[5] * 2) / 2
-      if (!byRow[y]) byRow[y] = []
-      byRow[y].push(item)
+    // Raccogli items non vuoti
+    const items = content.items.filter(item => item.str?.trim())
+    if (!items.length) continue
+
+    // Clustering per riga con tolleranza Y_TOL
+    const rowGroups = []  // [{sumY, count, items}]
+    for (const item of items) {
+      const y = item.transform[5]
+      let matched = null
+      for (const grp of rowGroups) {
+        if (Math.abs(grp.sumY / grp.count - y) <= Y_TOL) { matched = grp; break }
+      }
+      if (matched) {
+        matched.items.push(item)
+        matched.sumY += y
+        matched.count++
+      } else {
+        rowGroups.push({ sumY: y, count: 1, items: [item] })
+      }
     }
 
-    // Y decrescente = ordine top→bottom
-    const ys = Object.keys(byRow).map(Number).sort((a, b) => b - a)
-    const seen = new Set()
+    // Ordina gruppi top→bottom (y decrescente in PDF coords)
+    rowGroups.sort((a, b) => b.sumY / b.count - a.sumY / a.count)
 
-    for (const y of ys) {
-      const items = byRow[y].sort((a, b) => a.transform[4] - b.transform[4])
-      const text = normSpace(items.map(i => i.str).join(' '))
+    const seen = new Set()
+    for (const grp of rowGroups) {
+      grp.items.sort((a, b) => a.transform[4] - b.transform[4])
+      const text = normSpace(grp.items.map(i => i.str).join(' '))
       if (!text) continue
       const key = normSoft(text)
       if (seen.has(key)) continue
