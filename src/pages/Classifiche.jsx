@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
-import { doc, setDoc, getDoc, writeBatch } from 'firebase/firestore'
+import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 
 // ── Firestore helpers ─────────────────────────────────────────────────────────
@@ -11,17 +11,17 @@ const CHUNK_SZ = 400   // righe per documento (ogni chunk ~100KB < limite 1MB)
 async function fsSave(rows, stagione) {
   const chunks = []
   for (let i = 0; i < rows.length; i += CHUNK_SZ) chunks.push(rows.slice(i, i + CHUNK_SZ))
-  // meta doc
+  // Scrivi i chunk uno alla volta (più affidabile di writeBatch)
+  for (let i = 0; i < chunks.length; i++) {
+    await setDoc(
+      doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`),
+      { rows: chunks[i] }
+    )
+  }
+  // Meta per ultimo — solo quando tutti i chunk sono pronti
   await setDoc(doc(db, FS_COL, 'meta'), {
     stagione, timestamp: new Date().toISOString(), total: rows.length, chunks: chunks.length,
   })
-  // chunk docs in batch (max 499 ops per batch)
-  let batch = writeBatch(db), n = 0
-  for (let i = 0; i < chunks.length; i++) {
-    batch.set(doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`), { rows: chunks[i] })
-    if (++n === 499) { await batch.commit(); batch = writeBatch(db); n = 0 }
-  }
-  if (n > 0) await batch.commit()
 }
 
 async function fsLoad() {
