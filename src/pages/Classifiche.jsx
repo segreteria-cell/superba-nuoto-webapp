@@ -1,4 +1,24 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
+import LZString from 'lz-string'
+
+// Helper localStorage compresso (lz-string riduce ~70% su JSON grande)
+const lsGet = (key, fallback = null) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+    // Prova decompressione, fallback a JSON puro (backward compat)
+    const dec = LZString.decompress(raw)
+    return JSON.parse(dec || raw)
+  } catch { return fallback }
+}
+const lsSet = (key, value) => {
+  try {
+    localStorage.setItem(key, LZString.compress(JSON.stringify(value)))
+  } catch (e) {
+    console.warn('localStorage write failed:', e.message)
+    try { localStorage.removeItem(key) } catch {}
+  }
+}
 
 // URL backend: VITE_API_URL in produzione (Render), /api in dev (proxy Vite)
 const API_BASE = import.meta.env.VITE_API_URL || ""
@@ -100,9 +120,7 @@ export default function Classifiche() {
   const [stagione, setStagione] = useState(() => localStorage.getItem("aqt_stagione") || "2025-2026")
   const [topN,     setTopN]     = useState(() => parseInt(localStorage.getItem("aqt_topn") || "50", 10))
 
-  const [allRows,    setAllRows]    = useState(() => {
-    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "[]") } catch { return [] }
-  })
+  const [allRows,    setAllRows]    = useState(() => lsGet(CACHE_KEY, []))
   const [lastUpdate, setLastUpdate] = useState(() => localStorage.getItem("aqt_lastupdate") || "")
   const [loading,    setLoading]    = useState(false)
   const [elapsed,    setElapsed]    = useState(0)
@@ -138,7 +156,6 @@ export default function Classifiche() {
     setLoading(true); setError(""); setProgressMsg(""); setProgressPct(0); setFound(0)
     // Accumula righe localmente — aggiornate progressivamente dallo stream
     let accumulated = []
-    let lastSave = 0
     try {
       const res = await fetch(`${API_BASE}/api/aqt/cerca`, {
         method: "POST",
@@ -171,11 +188,6 @@ export default function Classifiche() {
               // Accumula righe ricevute in questo messaggio
               if (msg.new_rows?.length) {
                 accumulated = accumulated.concat(msg.new_rows)
-                // Salva in localStorage ogni 40 step per resilienza
-                if (msg.step - lastSave >= 40) {
-                  localStorage.setItem(CACHE_KEY, JSON.stringify(accumulated))
-                  lastSave = msg.step
-                }
               }
             } else if (msg.type === "error") {
               throw new Error(msg.msg)
@@ -198,8 +210,8 @@ export default function Classifiche() {
         setAllRows(accumulated)
         const now = new Date().toLocaleString("it-IT")
         setLastUpdate(now)
-        localStorage.setItem(CACHE_KEY, JSON.stringify(accumulated))
-        localStorage.setItem("aqt_lastupdate", now)
+        lsSet(CACHE_KEY, accumulated)
+        try { localStorage.setItem("aqt_lastupdate", now) } catch {}
       }
       setLoading(false); setProgressMsg(""); setProgressPct(0)
     }
