@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import LZString from 'lz-string'
+import * as XLSX from 'xlsx'
 
 // Helper localStorage compresso (lz-string riduce ~70% su JSON grande)
 const lsGet = (key, fallback = null) => {
@@ -61,7 +62,7 @@ const COLS = [
   { key:"Pos",     label:"Pos",      w:"w-10",  align:"center" },
   { key:"Atleta",  label:"Atleta",   w:"w-48",  align:"left"   },
   { key:"Anno",    label:"Anno",     w:"w-12",  align:"center" },
-  { key:"Societa", label:"Società",  w:"w-40",  align:"left"   },
+  { key:"Societa", label:"Società",  w:"w-52",  align:"left"   },
   { key:"_gara",   label:"Gara",     w:"w-40",  align:"left"   },
   { key:"Data",    label:"Data",     w:"w-22",  align:"center" },
   { key:"Tempo",   label:"Tempo",    w:"w-20",  align:"center" },
@@ -134,7 +135,6 @@ export default function Classifiche() {
   const [vascaF,      setVascaF]      = useState("")
   const [distanzaF,   setDistanzaF]   = useState("")
   const [specialitaF, setSpecialitaF] = useState("")
-  const [garaF,       setGaraF]       = useState("")
   const [soloSuperba, setSoloSuperba] = useState(false)
   const [sortCol,     setSortCol]     = useState("Pos")
   const [sortDir,     setSortDir]     = useState(1)   // 1=asc, -1=desc
@@ -150,6 +150,35 @@ export default function Classifiche() {
   useEffect(() => { localStorage.setItem("aqt_password", password) }, [password])
   useEffect(() => { localStorage.setItem("aqt_stagione", stagione) }, [stagione])
   useEffect(() => { localStorage.setItem("aqt_topn",     String(topN)) }, [topN])
+
+  const handleExport = () => {
+    if (!filteredRows.length) return
+    const exportCols = [
+      { key:"Pos",     hdr:"Pos"      },
+      { key:"Atleta",  hdr:"Atleta"   },
+      { key:"Anno",    hdr:"Anno"     },
+      { key:"Societa", hdr:"Società"  },
+      { key:"_gara",   hdr:"Gara"     },
+      { key:"_categoria", hdr:"Categoria" },
+      { key:"_sesso",  hdr:"Sesso"    },
+      { key:"Data",    hdr:"Data"     },
+      { key:"Tempo",   hdr:"Tempo"    },
+      { key:"PtFINA",  hdr:"Pt.FINA"  },
+      { key:"Vasca",   hdr:"Vasca"    },
+      { key:"Crono",   hdr:"Crono"    },
+    ]
+    const wsData = [
+      exportCols.map(c => c.hdr),
+      ...filteredRows.map(r => exportCols.map(c => r[c.key] ?? ""))
+    ]
+    const ws = XLSX.utils.aoa_to_sheet(wsData)
+    // Larghezze colonne
+    ws["!cols"] = [6,22,6,22,20,18,8,12,10,8,8,6].map(w => ({ wch: w }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, "Classifiche")
+    const stagLabel = stagione.replace("-","_")
+    XLSX.writeFile(wb, `Classifiche_AQT_${stagLabel}.xlsx`)
+  }
 
   const handleClear = () => {
     try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem("aqt_lastupdate") } catch {}
@@ -247,8 +276,7 @@ export default function Classifiche() {
       if (vascaF      && !(r.Vasca || "").trim().startsWith(vascaF.split(" ")[0])) return false
       if (distanzaF   && garaDistanza(r._gara || "") !== distanzaF) return false
       if (specialitaF && garaSpecialita(r._gara || "") !== specialitaF) return false
-      if (garaF       && r._gara !== garaF) return false
-      if (soloSuperba && !isSuperba(r)) return false
+        if (soloSuperba && !isSuperba(r)) return false
       if (posN(r) > topN) return false
       return true
     })
@@ -262,7 +290,7 @@ export default function Classifiche() {
       }
       return String(av).localeCompare(String(bv), "it") * sortDir
     })
-  }, [allRows, catSel, sesso, vascaF, distanzaF, specialitaF, garaF, soloSuperba, topN, visOk, sortCol, sortDir])
+  }, [allRows, catSel, sesso, vascaF, distanzaF, specialitaF, soloSuperba, topN, visOk, sortCol, sortDir])
 
   const stats = useMemo(() => ({
     tot: filteredRows.length,
@@ -279,10 +307,10 @@ export default function Classifiche() {
 
   const clearFilters = () => {
     setCatSel(new Set()); setSesso(""); setVascaF("")
-    setDistanzaF(""); setSpecialitaF(""); setGaraF(""); setSoloSuperba(false)
+    setDistanzaF(""); setSpecialitaF(""); setSoloSuperba(false)
   }
 
-  const hasFilters = catSel.size > 0 || sesso || vascaF || distanzaF || specialitaF || garaF || soloSuperba
+  const hasFilters = catSel.size > 0 || sesso || vascaF || distanzaF || specialitaF || soloSuperba
 
   return (
     <div className="flex flex-col gap-4 min-h-0">
@@ -324,7 +352,7 @@ export default function Classifiche() {
           </Field>
           <Field label="Top N">
             <div className="flex gap-1 mt-0.5">
-              {[10,20,30,50,100].map(n => (
+              {[10,20,30,50].map(n => (
                 <button key={n} onClick={() => setTopN(n)} disabled={loading}
                   className={`px-2.5 py-1 rounded text-xs font-bold transition-colors
                     ${topN === n ? "bg-sb-blue text-white" : "bg-sb-bg border border-sb-sep text-sb-muted hover:border-sb-blue"}`}>
@@ -340,6 +368,13 @@ export default function Classifiche() {
               ? <><Spinner /> Download... {elapsed}s</>
               : "Cerca su AQT"}
           </button>
+          {filteredRows?.length > 0 && !loading && (
+            <button onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold
+                         bg-green-700 text-white hover:bg-green-800 transition-colors shadow-sm">
+              📥 Excel
+            </button>
+          )}
           {(allRows.length > 0 || lastUpdate) && !loading && (
             <button onClick={handleClear} title="Svuota dati in cache"
               className="px-3 py-2 rounded-lg text-sm text-sb-muted border border-sb-sep
@@ -391,8 +426,7 @@ export default function Classifiche() {
               opts={[["","Tutte"],...DISTANZE.map(d=>[d,d+"m"])]} />
             <Sel label="Specialita" value={specialitaF} onChange={setSpecialitaF}
               opts={[["","Tutte"],...SPECIALITA.map(s=>[s,s])]} />
-            <Sel label="Gara" value={garaF} onChange={setGaraF}
-              opts={[["","Tutte"],...VIS_GARE.map(g=>[g,g])]} />
+
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-sb-muted font-medium mr-1">Categoria:</span>
@@ -472,7 +506,7 @@ export default function Classifiche() {
                           ) : c.key === "Tempo" ? (
                             <span className="font-mono font-semibold text-sb-text">{r[c.key]}</span>
                           ) : c.key === "Societa" ? (
-                            <span className={isSuperba(r) ? "font-semibold text-sb-green" : ""}>
+                            <span className={`whitespace-nowrap ${isSuperba(r) ? "font-semibold text-sb-green" : ""}`}>
                               {r[c.key]}
                             </span>
                           ) : (
