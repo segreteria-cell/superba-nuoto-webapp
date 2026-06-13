@@ -11,90 +11,6 @@ import concurrent.futures
 import json
 import os
 import time
-import io
-
-# ── Google Drive (opzionale — attivo solo se GOOGLE_CREDENTIALS è impostato) ──
-_drive_service = None
-_DRIVE_FILE_ID = None   # ID del file classifiche.json su Drive
-
-def _init_drive():
-    """Inizializza il client Drive dal JSON delle credenziali in env."""
-    global _drive_service
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if not creds_json or _drive_service:
-        return
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(creds_json),
-            scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        _drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    except Exception as e:
-        print(f"[Drive] init error: {e}")
-
-def drive_save(data: list, stagione: str):
-    """Salva la lista di righe come JSON su Drive (crea o aggiorna il file)."""
-    global _DRIVE_FILE_ID
-    _init_drive()
-    if not _drive_service:
-        return
-    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
-    payload = json.dumps({"stagione": stagione, "rows": data}, ensure_ascii=False)
-    media_body = __import__("googleapiclient.http", fromlist=["MediaIoBaseUpload"]).MediaIoBaseUpload(
-        io.BytesIO(payload.encode("utf-8")), mimetype="application/json"
-    )
-    try:
-        # Cerca file esistente nella cartella
-        if not _DRIVE_FILE_ID:
-            q = f"name='classifiche_aqt.json' and trashed=false"
-            if folder_id:
-                q += f" and '{folder_id}' in parents"
-            res = _drive_service.files().list(q=q, fields="files(id)").execute()
-            files = res.get("files", [])
-            if files:
-                _DRIVE_FILE_ID = files[0]["id"]
-
-        if _DRIVE_FILE_ID:
-            _drive_service.files().update(
-                fileId=_DRIVE_FILE_ID, media_body=media_body
-            ).execute()
-        else:
-            meta = {"name": "classifiche_aqt.json"}
-            if folder_id:
-                meta["parents"] = [folder_id]
-            f = _drive_service.files().create(
-                body=meta, media_body=media_body, fields="id"
-            ).execute()
-            _DRIVE_FILE_ID = f["id"]
-        print(f"[Drive] salvato {len(data)} righe, id={_DRIVE_FILE_ID}")
-    except Exception as e:
-        print(f"[Drive] save error: {e}")
-
-def drive_load() -> dict | None:
-    """Legge il file classifiche_aqt.json da Drive. Ritorna None se non trovato."""
-    global _DRIVE_FILE_ID
-    _init_drive()
-    if not _drive_service:
-        return None
-    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
-    try:
-        if not _DRIVE_FILE_ID:
-            q = "name='classifiche_aqt.json' and trashed=false"
-            if folder_id:
-                q += f" and '{folder_id}' in parents"
-            res = _drive_service.files().list(q=q, fields="files(id)").execute()
-            files = res.get("files", [])
-            if not files:
-                return None
-            _DRIVE_FILE_ID = files[0]["id"]
-
-        content_bytes = _drive_service.files().get_media(fileId=_DRIVE_FILE_ID).execute()
-        return json.loads(content_bytes.decode("utf-8"))
-    except Exception as e:
-        print(f"[Drive] load error: {e}")
-        return None
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -358,10 +274,6 @@ def cerca():
                     "new_rows": rows,
                 }) + "\n"
 
-        # Salva su Drive in background (non blocca lo stream)
-        import threading
-        threading.Thread(target=drive_save, args=(tutti, stagione), daemon=True).start()
-
         yield json.dumps({
             "type":     "done",
             "totale":   len(tutti),
@@ -374,15 +286,6 @@ def cerca():
         mimetype="application/x-ndjson",
         headers={"X-Accel-Buffering": "no"},
     )
-
-# -- Endpoint: dati (leggi da Drive) -----------------------------------------
-
-@app.route("/api/aqt/dati", methods=["GET"])
-def get_dati():
-    data = drive_load()
-    if data is None:
-        return jsonify({"rows": [], "stagione": "", "source": "none"}), 200
-    return jsonify({"rows": data.get("rows", []), "stagione": data.get("stagione", ""), "source": "drive"})
 
 # -- Endpoint: stagioni -------------------------------------------------------
 

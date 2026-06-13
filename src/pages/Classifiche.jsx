@@ -1,6 +1,41 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
+import { doc, setDoc, getDoc, writeBatch } from 'firebase/firestore'
+import { db } from '../lib/firebase'
+
+// ── Firestore helpers ─────────────────────────────────────────────────────────
+const FS_COL  = 'classifiche_data'
+const CHUNK_SZ = 400   // righe per documento (ogni chunk ~100KB < limite 1MB)
+
+async function fsSave(rows, stagione) {
+  const chunks = []
+  for (let i = 0; i < rows.length; i += CHUNK_SZ) chunks.push(rows.slice(i, i + CHUNK_SZ))
+  // meta doc
+  await setDoc(doc(db, FS_COL, 'meta'), {
+    stagione, timestamp: new Date().toISOString(), total: rows.length, chunks: chunks.length,
+  })
+  // chunk docs in batch (max 499 ops per batch)
+  let batch = writeBatch(db), n = 0
+  for (let i = 0; i < chunks.length; i++) {
+    batch.set(doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`), { rows: chunks[i] })
+    if (++n === 499) { await batch.commit(); batch = writeBatch(db); n = 0 }
+  }
+  if (n > 0) await batch.commit()
+}
+
+async function fsLoad() {
+  const metaSnap = await getDoc(doc(db, FS_COL, 'meta'))
+  if (!metaSnap.exists()) return null
+  const meta = metaSnap.data()
+  const snaps = await Promise.all(
+    Array.from({ length: meta.chunks }, (_, i) =>
+      getDoc(doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`))
+    )
+  )
+  const rows = snaps.flatMap(s => (s.exists() ? s.data().rows : []))
+  return { rows, stagione: meta.stagione, timestamp: meta.timestamp }
+}
 
 // Helper localStorage compresso (lz-string riduce ~70% su JSON grande)
 const lsGet = (key, fallback = null) => {
@@ -257,6 +292,8 @@ export default function Classifiche() {
         setLastUpdate(now)
         lsSet(CACHE_KEY, accumulated)
         try { localStorage.setItem("aqt_lastupdate", now) } catch {}
+        // Salva su Firestore in background (non blocca la UI)
+        fsSave(accumulated, stagione).catch(e => console.warn("[Firestore] save error:", e))
       }
       setLoading(false); setProgressMsg(""); setProgressPct(0)
     }
@@ -274,19 +311,22 @@ export default function Classifiche() {
     return true
   }, [CATS_M_SET, CATS_F_SET, VIS_GARE_SET])
 
-  // Carica dati da Drive al mount (se localStorage vuoto)
+  // Carica dati da Firestore al mount (se localStorage vuoto)
   useEffect(() => {
     if (allRows.length > 0) return   // già in cache locale
-    fetch(`${API_BASE}/api/aqt/dati`)
-      .then(r => r.json())
+    fsLoad()
       .then(data => {
-        if (data.rows?.length > 0) {
+        if (data?.rows?.length > 0) {
           setAllRows(data.rows)
-          const now = data.stagione ? `Stagione ${data.stagione} (da Drive)` : "Da Drive"
-          setLastUpdate(prev => prev || now)
+          lsSet(CACHE_KEY, data.rows)
+          const ts = data.timestamp ? new Date(data.timestamp).toLocaleString("it-IT") : ""
+          const lbl = data.stagione
+            ? `Stagione ${data.stagione}${ts ? " · " + ts : ""} (da cloud)`
+            : "Da cloud"
+          setLastUpdate(prev => prev || lbl)
         }
       })
-      .catch(() => {})   // silenzioso se Render è in sleep
+      .catch(() => {})   // silenzioso se non esiste ancora
   }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSort = col => {
