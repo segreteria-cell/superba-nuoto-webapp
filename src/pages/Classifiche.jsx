@@ -274,6 +274,21 @@ export default function Classifiche() {
     return true
   }, [CATS_M_SET, CATS_F_SET, VIS_GARE_SET])
 
+  // Carica dati da Drive al mount (se localStorage vuoto)
+  useEffect(() => {
+    if (allRows.length > 0) return   // già in cache locale
+    fetch(`${API_BASE}/api/aqt/dati`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.rows?.length > 0) {
+          setAllRows(data.rows)
+          const now = data.stagione ? `Stagione ${data.stagione} (da Drive)` : "Da Drive"
+          setLastUpdate(prev => prev || now)
+        }
+      })
+      .catch(() => {})   // silenzioso se Render è in sleep
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSort = col => {
     if (sortCol === col) setSortDir(d => -d)
     else { setSortCol(col); setSortDir(1) }
