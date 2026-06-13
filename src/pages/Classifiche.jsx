@@ -93,6 +93,17 @@ function isSuperba(r) {
   return (r.Societa || "").toLowerCase().includes("superba")
 }
 
+function catAbbr(cat) {
+  return cat
+    .replace("RAGAZZI", "RAG")
+    .replace("JUNIORES", "JUN")
+    .replace("CADETTI", "CAD")
+    .replace("SENIORES", "SEN")
+    .replace("ASSOLUTI", "ASS")
+    .replace("° Anno", "°")
+    .trim()
+}
+
 function posN(r) {
   const n = parseInt(String(r.Pos ?? "99").replace(".", ""), 10)
   return isNaN(n) ? 99 : n
@@ -299,6 +310,27 @@ export default function Classifiche() {
     sup: filteredRows.filter(isSuperba).length,
   }), [filteredRows])
 
+  const superbaStats = useMemo(() => {
+    const supRows = filteredRows.filter(isSuperba)
+    const CAT_ORDER = [
+      "RAGAZZI 1° Anno","RAGAZZI 2° Anno","RAGAZZI 3° Anno",
+      "JUNIORES 1° Anno","JUNIORES 2° Anno",
+      "CADETTI","SENIORES","ASSOLUTI",
+    ]
+    const bycat = {}
+    for (const r of supRows) {
+      const cat = (r._categoria || "").trim()
+      if (!bycat[cat]) bycat[cat] = { m: 0, f: 0 }
+      if (r._sesso === "Maschi")  bycat[cat].m++
+      else                        bycat[cat].f++
+    }
+    const pills = CAT_ORDER
+      .filter(c => bycat[c])
+      .map(c => ({ cat: c, abbr: catAbbr(c), m: bycat[c].m, f: bycat[c].f }))
+    const distinct = new Set(supRows.map(r => r.Atleta)).size
+    return { pills, total: supRows.length, distinct }
+  }, [filteredRows])
+
   const toggleCat = cat => setCatSel(prev => {
     const next = new Set(prev)
     if (next.has(cat)) next.delete(cat); else next.add(cat)
@@ -465,6 +497,38 @@ export default function Classifiche() {
               <span className="text-sm font-bold tabular-nums">{v.toLocaleString("it-IT")}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Superba per categoria */}
+      {superbaStats.pills.length > 0 && (
+        <div className="bg-white border border-sb-sep rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-bold text-sb-blue whitespace-nowrap">
+              🏊 Superba per categoria
+            </span>
+            <span className="text-xs text-sb-muted">
+              ({superbaStats.total} gare · {superbaStats.distinct} atleti distinti)
+            </span>
+            <div className="flex flex-wrap gap-2 mt-0.5">
+              {superbaStats.pills.map(p => (
+                <div key={p.cat}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-sb-sep bg-sb-bg text-xs">
+                  <span className="font-bold text-sb-muted">{p.abbr}</span>
+                  {p.m > 0 && (
+                    <span className="flex items-center gap-0.5 text-blue-600 font-semibold">
+                      <span className="text-[11px]">♂</span>{p.m}
+                    </span>
+                  )}
+                  {p.f > 0 && (
+                    <span className="flex items-center gap-0.5 text-pink-600 font-semibold">
+                      <span className="text-[11px]">♀</span>{p.f}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
