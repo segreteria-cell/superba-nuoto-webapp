@@ -38,18 +38,16 @@ const SPECIALITA = ["Stile Libero","Dorso","Rana","Farfalla","Misti"]
 const VASCHE = ["25 m","50 m"]
 
 const COLS = [
-  { key:"Pos",       label:"Pos",     w:"w-12"  },
-  { key:"Atleta",    label:"Atleta",  w:"w-44"  },
-  { key:"Anno",      label:"Anno",    w:"w-12"  },
-  { key:"Societa",   label:"Societa", w:"w-36"  },
-  { key:"_gara",     label:"Gara",    w:"w-36"  },
-  { key:"_categoria",label:"Cat.",    w:"w-28"  },
-  { key:"_sesso",    label:"Sesso",   w:"w-20"  },
-  { key:"Data",      label:"Data",    w:"w-24"  },
-  { key:"Tempo",     label:"Tempo",   w:"w-20"  },
-  { key:"PtFINA",    label:"Pt.FINA", w:"w-16"  },
-  { key:"Vasca",     label:"Vasca",   w:"w-14"  },
-  { key:"Crono",     label:"Crono",   w:"w-14"  },
+  { key:"Pos",     label:"Pos",      w:"w-10",  align:"center" },
+  { key:"Atleta",  label:"Atleta",   w:"w-48",  align:"left"   },
+  { key:"Anno",    label:"Anno",     w:"w-12",  align:"center" },
+  { key:"Societa", label:"Società",  w:"w-40",  align:"left"   },
+  { key:"_gara",   label:"Gara",     w:"w-40",  align:"left"   },
+  { key:"Data",    label:"Data",     w:"w-22",  align:"center" },
+  { key:"Tempo",   label:"Tempo",    w:"w-20",  align:"center" },
+  { key:"PtFINA",  label:"Pt.FINA",  w:"w-16",  align:"center" },
+  { key:"Vasca",   label:"Vasca",    w:"w-14",  align:"center" },
+  { key:"Crono",   label:"Crono",    w:"w-14",  align:"center" },
 ]
 
 const CACHE_KEY = "classifiche_allRows"
@@ -120,6 +118,8 @@ export default function Classifiche() {
   const [specialitaF, setSpecialitaF] = useState("")
   const [garaF,       setGaraF]       = useState("")
   const [soloSuperba, setSoloSuperba] = useState(false)
+  const [sortCol,     setSortCol]     = useState("Pos")
+  const [sortDir,     setSortDir]     = useState(1)   // 1=asc, -1=desc
 
   useEffect(() => {
     if (!loading) return
@@ -217,18 +217,35 @@ export default function Classifiche() {
     return true
   }, [CATS_M_SET, CATS_F_SET, VIS_GARE_SET])
 
-  const filteredRows = useMemo(() => allRows.filter(r => {
-    if (!visOk(r)) return false
-    if (catSel.size > 0 && !catSel.has((r._categoria || "").trim())) return false
-    if (sesso       && r._sesso !== sesso) return false
-    if (vascaF      && !(r.Vasca || "").trim().startsWith(vascaF.split(" ")[0])) return false
-    if (distanzaF   && garaDistanza(r._gara || "") !== distanzaF) return false
-    if (specialitaF && garaSpecialita(r._gara || "") !== specialitaF) return false
-    if (garaF       && r._gara !== garaF) return false
-    if (soloSuperba && !isSuperba(r)) return false
-    if (posN(r) > topN) return false
-    return true
-  }), [allRows, catSel, sesso, vascaF, distanzaF, specialitaF, garaF, soloSuperba, topN, visOk])
+  const handleSort = col => {
+    if (sortCol === col) setSortDir(d => -d)
+    else { setSortCol(col); setSortDir(1) }
+  }
+
+  const filteredRows = useMemo(() => {
+    const filtered = allRows.filter(r => {
+      if (!visOk(r)) return false
+      if (catSel.size > 0 && !catSel.has((r._categoria || "").trim())) return false
+      if (sesso       && r._sesso !== sesso) return false
+      if (vascaF      && !(r.Vasca || "").trim().startsWith(vascaF.split(" ")[0])) return false
+      if (distanzaF   && garaDistanza(r._gara || "") !== distanzaF) return false
+      if (specialitaF && garaSpecialita(r._gara || "") !== specialitaF) return false
+      if (garaF       && r._gara !== garaF) return false
+      if (soloSuperba && !isSuperba(r)) return false
+      if (posN(r) > topN) return false
+      return true
+    })
+    return [...filtered].sort((a, b) => {
+      let av = a[sortCol] ?? "", bv = b[sortCol] ?? ""
+      if (sortCol === "Pos") { av = posN(a); bv = posN(b); return (av - bv) * sortDir }
+      if (sortCol === "PtFINA" || sortCol === "Anno") {
+        const an = parseFloat(String(av).replace(",",".")) || 0
+        const bn = parseFloat(String(bv).replace(",",".")) || 0
+        return (an - bn) * sortDir
+      }
+      return String(av).localeCompare(String(bv), "it") * sortDir
+    })
+  }, [allRows, catSel, sesso, vascaF, distanzaF, specialitaF, garaF, soloSuperba, topN, visOk, sortCol, sortDir])
 
   const stats = useMemo(() => ({
     tot: filteredRows.length,
@@ -289,9 +306,15 @@ export default function Classifiche() {
             </select>
           </Field>
           <Field label="Top N">
-            <input type="number" min={1} max={200} value={topN}
-              onChange={e => setTopN(Math.max(1, parseInt(e.target.value) || 50))}
-              disabled={loading} className={INPUT + " w-20"} />
+            <div className="flex gap-1 mt-0.5">
+              {[10,20,30,50,100].map(n => (
+                <button key={n} onClick={() => setTopN(n)} disabled={loading}
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition-colors
+                    ${topN === n ? "bg-sb-blue text-white" : "bg-sb-bg border border-sb-sep text-sb-muted hover:border-sb-blue"}`}>
+                  {n}
+                </button>
+              ))}
+            </div>
           </Field>
           <button onClick={handleCerca} disabled={loading}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold
@@ -395,8 +418,16 @@ export default function Classifiche() {
               <thead className="sticky top-0 z-10">
                 <tr className="bg-sb-dark text-white">
                   {COLS.map(c => (
-                    <th key={c.key} className={`px-3 py-2 text-left font-semibold tracking-wide ${c.w}`}>
-                      {c.label}
+                    <th key={c.key} onClick={() => handleSort(c.key)}
+                      className={`px-3 py-2 font-semibold tracking-wide cursor-pointer select-none
+                        hover:bg-sb-blue/80 transition-colors ${c.w}
+                        ${c.align === "center" ? "text-center" : "text-left"}`}>
+                      <span className={`flex items-center gap-1 ${c.align === "center" ? "justify-center" : ""}`}>
+                        {c.label}
+                        {sortCol === c.key && (
+                          <span className="text-[10px] opacity-80">{sortDir === 1 ? "▲" : "▼"}</span>
+                        )}
+                      </span>
                     </th>
                   ))}
                 </tr>
@@ -408,7 +439,7 @@ export default function Classifiche() {
                   return (
                     <tr key={i} className={`${TAG_CLS[tag]} hover:opacity-80 transition-opacity`}>
                       {COLS.map(c => (
-                        <td key={c.key} className="px-3 py-1.5 border-b border-sb-sep/40">
+                        <td key={c.key} className={`px-3 py-1.5 border-b border-sb-sep/40 ${c.align === "center" ? "text-center" : ""}`}>
                           {c.key === "Pos" ? (
                             <span className="flex items-center gap-1">
                               {pos===1?"🥇":pos===2?"🥈":pos===3?"🥉":""}
