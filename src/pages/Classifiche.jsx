@@ -640,8 +640,7 @@ export default function Classifiche() {
       ) : !loading ? (
         <div className="flex items-center justify-center h-48 rounded-xl border-2 border-dashed border-sb-sep">
           <div className="text-center">
-            <p className="text-3xl mb-2 opacity-30">📊</p>
-            <p className="text-sb-muted font-medium">Nessun dato</p>
+            <p className="text-3xl mb-2 opacity-30">📊</p>            <p className="text-sb-muted font-medium">Nessun dato</p>
             <p className="text-sb-muted text-sm mt-1">
               Inserisci credenziali e clicca Cerca su AQT
             </p>
@@ -651,6 +650,7 @@ export default function Classifiche() {
     </div>
   )
 }
+
 
 // Sub-componenti
 
