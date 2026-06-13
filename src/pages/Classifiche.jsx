@@ -1,40 +1,29 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
-import { doc, setDoc, getDoc } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { ref as rtdbRef, set as rtdbSet, get as rtdbGet } from 'firebase/database'
+import { rtdb } from '../lib/firebase'
 
-// ── Firestore helpers ─────────────────────────────────────────────────────────
-const FS_COL  = 'classifiche_data'
-const CHUNK_SZ = 400   // righe per documento (ogni chunk ~100KB < limite 1MB)
+// ── Realtime Database helpers ─────────────────────────────────────────────────
+// Salva/carica l'intera classifica come JSON compresso (lz-string)
+// RTDB free tier: 1GB storage, 10GB/mese bandwidth — nessun chunking necessario
 
-async function fsSave(rows, stagione) {
-  const chunks = []
-  for (let i = 0; i < rows.length; i += CHUNK_SZ) chunks.push(rows.slice(i, i + CHUNK_SZ))
-  // Scrivi i chunk uno alla volta (più affidabile di writeBatch)
-  for (let i = 0; i < chunks.length; i++) {
-    await setDoc(
-      doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`),
-      { rows: chunks[i] }
-    )
-  }
-  // Meta per ultimo — solo quando tutti i chunk sono pronti
-  await setDoc(doc(db, FS_COL, 'meta'), {
-    stagione, timestamp: new Date().toISOString(), total: rows.length, chunks: chunks.length,
+async function cloudSave(rows, stagione) {
+  const compressed = LZString.compress(JSON.stringify(rows))
+  await rtdbSet(rtdbRef(rtdb, 'classifiche_aqt'), {
+    stagione,
+    timestamp: new Date().toISOString(),
+    total: rows.length,
+    data: compressed,
   })
 }
 
-async function fsLoad() {
-  const metaSnap = await getDoc(doc(db, FS_COL, 'meta'))
-  if (!metaSnap.exists()) return null
-  const meta = metaSnap.data()
-  const snaps = await Promise.all(
-    Array.from({ length: meta.chunks }, (_, i) =>
-      getDoc(doc(db, FS_COL, `chunk_${String(i).padStart(3, '0')}`))
-    )
-  )
-  const rows = snaps.flatMap(s => (s.exists() ? s.data().rows : []))
-  return { rows, stagione: meta.stagione, timestamp: meta.timestamp }
+async function cloudLoad() {
+  const snap = await rtdbGet(rtdbRef(rtdb, 'classifiche_aqt'))
+  if (!snap.exists()) return null
+  const val = snap.val()
+  const rows = JSON.parse(LZString.decompress(val.data))
+  return { rows, stagione: val.stagione, timestamp: val.timestamp }
 }
 
 // Helper localStorage compresso (lz-string riduce ~70% su JSON grande)
@@ -292,8 +281,8 @@ export default function Classifiche() {
         setLastUpdate(now)
         lsSet(CACHE_KEY, accumulated)
         try { localStorage.setItem("aqt_lastupdate", now) } catch {}
-        // Salva su Firestore in background (non blocca la UI)
-        fsSave(accumulated, stagione).catch(e => console.warn("[Firestore] save error:", e))
+        // Salva su Realtime Database in background (non blocca la UI)
+        cloudSave(accumulated, stagione).catch(e => console.warn("[RTDB] save error:", e))
       }
       setLoading(false); setProgressMsg(""); setProgressPct(0)
     }
@@ -311,10 +300,10 @@ export default function Classifiche() {
     return true
   }, [CATS_M_SET, CATS_F_SET, VIS_GARE_SET])
 
-  // Carica dati da Firestore al mount (se localStorage vuoto)
+  // Carica dati da Realtime Database al mount (se localStorage vuoto)
   useEffect(() => {
     if (allRows.length > 0) return   // già in cache locale
-    fsLoad()
+    cloudLoad()
       .then(data => {
         if (data?.rows?.length > 0) {
           setAllRows(data.rows)
