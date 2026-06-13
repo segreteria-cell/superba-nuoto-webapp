@@ -151,6 +151,11 @@ export default function Classifiche() {
   useEffect(() => { localStorage.setItem("aqt_stagione", stagione) }, [stagione])
   useEffect(() => { localStorage.setItem("aqt_topn",     String(topN)) }, [topN])
 
+  const handleClear = () => {
+    try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem("aqt_lastupdate") } catch {}
+    setAllRows([]); setLastUpdate(""); setError("")
+  }
+
   const handleCerca = useCallback(async () => {
     if (!utente || !password) { setError("Inserisci credenziali AquaTime"); return }
     setLoading(true); setError(""); setProgressMsg(""); setProgressPct(0); setFound(0)
@@ -335,6 +340,13 @@ export default function Classifiche() {
               ? <><Spinner /> Download... {elapsed}s</>
               : "Cerca su AQT"}
           </button>
+          {(allRows.length > 0 || lastUpdate) && !loading && (
+            <button onClick={handleClear} title="Svuota dati in cache"
+              className="px-3 py-2 rounded-lg text-sm text-sb-muted border border-sb-sep
+                         hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-colors">
+              🗑
+            </button>
+          )}
         </div>
         {loading && (
           <div className="mt-3 space-y-2">
