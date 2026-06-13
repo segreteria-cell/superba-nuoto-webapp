@@ -109,6 +109,9 @@ export default function Classifiche() {
   const [loading,    setLoading]    = useState(false)
   const [elapsed,    setElapsed]    = useState(0)
   const [error,      setError]      = useState("")
+  const [progressMsg,setProgressMsg]= useState("")
+  const [progressPct,setProgressPct]= useState(0)
+  const [found,      setFound]      = useState(0)
 
   const [catSel,      setCatSel]      = useState(new Set())
   const [sesso,       setSesso]       = useState("")
@@ -132,7 +135,7 @@ export default function Classifiche() {
 
   const handleCerca = useCallback(async () => {
     if (!utente || !password) { setError("Inserisci credenziali AquaTime"); return }
-    setLoading(true); setError("")
+    setLoading(true); setError(""); setProgressMsg(""); setProgressPct(0); setFound(0)
     try {
       const res = await fetch(`${API_BASE}/api/aqt/cerca`, {
         method: "POST",
@@ -143,18 +146,45 @@ export default function Classifiche() {
         const j = await res.json().catch(() => ({}))
         throw new Error(j.error || `HTTP ${res.status}`)
       }
-      const data = await res.json()
-      const rows = data.rows || []
-      setAllRows(rows)
-      const now = new Date().toLocaleString("it-IT")
-      setLastUpdate(now)
-      localStorage.setItem(CACHE_KEY, JSON.stringify(rows))
-      localStorage.setItem("aqt_lastupdate", now)
-      if (data.errori?.length) setError(`Download completato con ${data.errori.length} errori di rete`)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const msg = JSON.parse(line)
+            if (msg.type === "status") {
+              setProgressMsg(msg.msg)
+            } else if (msg.type === "progress") {
+              setProgressPct(msg.pct)
+              setFound(msg.found)
+              setProgressMsg(`${msg.cat}  |  ${msg.gara}  |  ${msg.sesso}  |  ${msg.vasca}`)
+            } else if (msg.type === "error") {
+              throw new Error(msg.msg)
+            } else if (msg.type === "done") {
+              const rows = msg.rows || []
+              setAllRows(rows)
+              const now = new Date().toLocaleString("it-IT")
+              setLastUpdate(now)
+              localStorage.setItem(CACHE_KEY, JSON.stringify(rows))
+              localStorage.setItem("aqt_lastupdate", now)
+              if (msg.errori?.length) setError(`Download completato con ${msg.errori.length} errori di rete`)
+            }
+          } catch (parseErr) {
+            if (parseErr.message !== "Unexpected end of JSON input") throw parseErr
+          }
+        }
+      }
     } catch (e) {
       setError(`Errore: ${e.message}`)
     } finally {
-      setLoading(false)
+      setLoading(false); setProgressMsg(""); setProgressPct(0)
     }
   }, [utente, password, stagione])
 
@@ -255,13 +285,21 @@ export default function Classifiche() {
           </button>
         </div>
         {loading && (
-          <div className="mt-3">
-            <div className="w-full h-1.5 bg-sb-sep rounded-full overflow-hidden">
-              <div className="h-full bg-sb-blue rounded-full animate-pulse w-full" />
+          <div className="mt-3 space-y-2">
+            <div className="w-full h-2 bg-sb-sep rounded-full overflow-hidden">
+              <div
+                className="h-full bg-sb-blue rounded-full transition-all duration-300"
+                style={{ width: `${progressPct || 2}%` }}
+              />
             </div>
-            <p className="text-xs text-sb-muted mt-1">
-              Download in corso - tutte le categorie x gare x sessi x vasche. Tipicamente 2-3 minuti.
-            </p>
+            <div className="flex items-center justify-between text-xs text-sb-muted">
+              <span className="font-mono">{progressMsg || "Connessione ad AquaTime..."}</span>
+              <span className="flex gap-3 flex-shrink-0 ml-2">
+                {progressPct > 0 && <span className="font-semibold text-sb-blue">{progressPct}%</span>}
+                {found > 0 && <span className="text-sb-green font-semibold">{found.toLocaleString("it-IT")} atleti</span>}
+                <span className="tabular-nums">{elapsed}s</span>
+              </span>
+            </div>
           </div>
         )}
         {error && (

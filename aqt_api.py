@@ -1,20 +1,22 @@
 """
-aqt_api.py — Flask proxy server per AquaTime
-Esegue login e scraping su aquatime.it per conto della webapp React.
+aqt_api.py -- Flask proxy server per AquaTime
+Streaming NDJSON: manda progress line-by-line durante lo scraping.
 Avvia con:  python aqt_api.py
 Porta:      5001
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
 import time
+import json
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# ── Costanti AquaTime ─────────────────────────────────────────────────────────
+# -- Costanti AquaTime --------------------------------------------------------
 
 AQT_BASE = "https://aquatime.it"
 
@@ -90,9 +92,9 @@ VIS_GARE = {
     "200 Misti", "400 Misti",
 }
 
-# ── Login ─────────────────────────────────────────────────────────────────────
+# -- Login --------------------------------------------------------------------
 
-def aqt_login(session: requests.Session, utente: str, password: str) -> bool:
+def aqt_login(session, utente, password):
     headers = {
         "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
         "Referer":         AQT_BASE + "/",
@@ -109,10 +111,9 @@ def aqt_login(session: requests.Session, utente: str, password: str) -> bool:
     )
     return r.status_code == 200
 
-# ── HTML parser ───────────────────────────────────────────────────────────────
+# -- HTML parser --------------------------------------------------------------
 
-def parse_table(html: str, gara: str, categoria: str, sesso_str: str,
-                stagione: str, vasca_override: str | None = None) -> list[dict]:
+def parse_table(html, gara, categoria, sesso_str, stagione, vasca_override=None):
     soup = BeautifulSoup(html, "html.parser")
     target = None
     for tbl in soup.find_all("table", class_="datatable"):
@@ -149,7 +150,7 @@ def parse_table(html: str, gara: str, categoria: str, sesso_str: str,
             "Pos":        g("pos", "Pos.") or (cells[0] if cells else ""),
             "Atleta":     atleta,
             "Anno":       g("anno", "Anno") or (cells[2] if len(cells) > 2 else ""),
-            "Societa":    g("socie", "Società") or (cells[3] if len(cells) > 3 else ""),
+            "Societa":    g("socie") or (cells[3] if len(cells) > 3 else ""),
             "Data":       g("data", "Data") or (cells[4] if len(cells) > 4 else ""),
             "Tempo":      g("tempo", "Tempo") or (cells[5] if len(cells) > 5 else ""),
             "PtFINA":     g("fina", "Pt.") or (cells[6] if len(cells) > 6 else ""),
@@ -162,7 +163,7 @@ def parse_table(html: str, gara: str, categoria: str, sesso_str: str,
         })
     return rows
 
-# ── Endpoint: cerca ───────────────────────────────────────────────────────────
+# -- Endpoint: cerca (streaming NDJSON) ---------------------------------------
 
 @app.route("/api/aqt/cerca", methods=["POST"])
 def cerca():
@@ -174,77 +175,100 @@ def cerca():
     if not utente or not password:
         return jsonify({"error": "Credenziali mancanti"}), 400
 
-    stag_id = AQT_STAGIONI.get(stagione, "20")
+    def generate():
+        stag_id = AQT_STAGIONI.get(stagione, "20")
+        session = requests.Session()
 
-    session = requests.Session()
-    try:
-        ok = aqt_login(session, utente, password)
-        if not ok:
-            return jsonify({"error": "Login fallito (status != 200)"}), 401
-    except Exception as e:
-        return jsonify({"error": f"Errore login: {e}"}), 500
+        # Login
+        yield json.dumps({"type": "status", "msg": "Login su aquatime.it..."}) + "\n"
+        try:
+            ok = aqt_login(session, utente, password)
+            if not ok:
+                yield json.dumps({"type": "error", "msg": "Login fallito"}) + "\n"
+                return
+        except Exception as e:
+            yield json.dumps({"type": "error", "msg": f"Errore login: {e}"}) + "\n"
+            return
 
-    cats_m = set(VIS_CATS_M.values())
-    cats_f = set(VIS_CATS_F.values())
-    cats_vis = cats_m | cats_f
+        cats_m   = set(VIS_CATS_M.values())
+        cats_f   = set(VIS_CATS_F.values())
+        cats_vis = cats_m | cats_f
+        cats  = [c for c in AQT_CATEGORIE if c in cats_vis]
+        gares = [g for g in AQT_GARE if g in VIS_GARE]
 
-    cats  = [c for c in AQT_CATEGORIE if c in cats_vis]
-    gares = [g for g in AQT_GARE if g in VIS_GARE]
+        combos = []
+        for g in gares:
+            for c in cats:
+                if c in cats_m:
+                    combos.append((c, g, "Maschi"))
+                if c in cats_f:
+                    combos.append((c, g, "Femmine"))
 
-    combos = []
-    for g in gares:
-        for c in cats:
-            if c in cats_m:
-                combos.append((c, g, "Maschi"))
-            if c in cats_f:
-                combos.append((c, g, "Femmine"))
+        VASCHE = [("1", "25 m"), ("2", "50 m")]
+        totale = len(combos) * len(VASCHE)
+        tutti  = []
+        errori = []
+        step   = 0
 
-    VASCHE = [("1", "25 m"), ("2", "50 m")]
-    totale = len(combos) * len(VASCHE)
-    tutti  = []
-    errori = []
-    step   = 0
+        for cat, gara, sesso_str in combos:
+            cat_id   = AQT_CATEGORIE.get(cat, "9")
+            gara_id  = AQT_GARE.get(gara, "43")
+            sesso_id = "1" if sesso_str == "Maschi" else "2"
 
-    for cat, gara, sesso_str in combos:
-        cat_id   = AQT_CATEGORIE.get(cat, "9")
-        gara_id  = AQT_GARE.get(gara, "43")
-        sesso_id = "1" if sesso_str == "Maschi" else "2"
+            for vasca_id, vasca_lbl in VASCHE:
+                step += 1
+                pct = int(step / totale * 100)
 
-        for vasca_id, vasca_lbl in VASCHE:
-            step += 1
-            url = (
-                f"{AQT_BASE}/records.php"
-                f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
-                f"&tipoG=2&Vasca={vasca_id}&Sesso={sesso_id}"
-                f"&TipoTempi=2&SoloSoc=0&comi=1&page=1#box3"
-            )
-            try:
-                r    = session.get(url, timeout=20)
-                rows = parse_table(r.text, gara, cat, sesso_str, stagione, vasca_lbl)
-                tutti.extend(rows)
-            except Exception as e:
-                errori.append(f"{cat}|{gara}|{sesso_str}|{vasca_lbl}: {e}")
-            time.sleep(0.15)
+                yield json.dumps({
+                    "type":  "progress",
+                    "pct":   pct,
+                    "step":  step,
+                    "total": totale,
+                    "cat":   cat,
+                    "gara":  gara,
+                    "sesso": sesso_str,
+                    "vasca": vasca_lbl,
+                    "found": len(tutti),
+                }) + "\n"
 
-    return jsonify({
-        "rows":   tutti,
-        "totale": len(tutti),
-        "errori": errori,
-        "stagione": stagione,
-    })
+                url = (
+                    f"{AQT_BASE}/records.php"
+                    f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
+                    f"&tipoG=2&Vasca={vasca_id}&Sesso={sesso_id}"
+                    f"&TipoTempi=2&SoloSoc=0&comi=1&page=1#box3"
+                )
+                try:
+                    r    = session.get(url, timeout=20)
+                    rows = parse_table(r.text, gara, cat, sesso_str, stagione, vasca_lbl)
+                    tutti.extend(rows)
+                except Exception as e:
+                    errori.append(f"{cat}|{gara}|{sesso_str}|{vasca_lbl}: {e}")
+                time.sleep(0.15)
 
-# ── Endpoint: stagioni ────────────────────────────────────────────────────────
+        yield json.dumps({
+            "type":    "done",
+            "rows":    tutti,
+            "totale":  len(tutti),
+            "errori":  errori,
+            "stagione": stagione,
+        }) + "\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
+    )
+
+# -- Endpoint: stagioni -------------------------------------------------------
 
 @app.route("/api/aqt/stagioni", methods=["GET"])
 def stagioni():
     return jsonify(list(AQT_STAGIONI.keys()))
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5001))
     host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
     print(f"AquaTime API server avviato su http://{host}:{port}")
-    print("Endpoint: POST /api/aqt/cerca")
     app.run(host=host, port=port, debug=False)
