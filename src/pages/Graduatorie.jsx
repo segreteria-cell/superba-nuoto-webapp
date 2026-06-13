@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
+import XLSXStyle from 'xlsx-js-style'
 import { ref as rtdbRef, set as rtdbSet, get as rtdbGet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
 
@@ -223,164 +224,299 @@ function buildGraduatoria(allRows, filters, topN, bestPerAtleta) {
   return rows.slice(0, topN).map((r, i) => ({ ...r, posGrad: i + 1 }))
 }
 
+// ── Stili per export xlsx ──────────────────────────────────────────────────────
+
+
+const XS = {
+  // Graduatorie fills
+  fTitle:    { patternType: 'solid', fgColor: { rgb: 'C2185B' } },
+  fCatHdr:   { patternType: 'solid', fgColor: { rgb: '37474F' } },
+  fColHdr:   { patternType: 'solid', fgColor: { rgb: 'F06292' } },
+  fEvt:      { patternType: 'solid', fgColor: { rgb: 'E91E8C' } },
+  fOdd:      { patternType: 'solid', fgColor: { rgb: 'FFF8E1' } },
+  fEven:     { patternType: 'solid', fgColor: { rgb: 'F5F5F5' } },
+  // Staffette fills
+  fSTitle:   { patternType: 'solid', fgColor: { rgb: 'AD1457' } },
+  fSCatHdr:  { patternType: 'solid', fgColor: { rgb: '880E4F' } },
+  fSColHdr:  { patternType: 'solid', fgColor: { rgb: 'F48FB1' } },
+  fFrazLbl:  { patternType: 'solid', fgColor: { rgb: 'E91E8C' } },
+  fFraz:     ['FFF8E1','F5F5F5','FBE9E7','EAF5FC'].map(rgb => ({ patternType:'solid', fgColor:{ rgb } })),
+  fTotLbl:   { patternType: 'solid', fgColor: { rgb: '880E4F' } },
+  fTotData:  { patternType: 'solid', fgColor: { rgb: 'FCE4EC' } },
+  fRisHdr:   { patternType: 'solid', fgColor: { rgb: '78909C' } },
+  fRis:      ['F8F8F8','EFEFEF','F8F8F8'].map(rgb => ({ patternType:'solid', fgColor:{ rgb } })),
+  // Fonts
+  fntWBL:  (sz=13) => ({ bold:true, color:{ rgb:'FFFFFF' }, sz }),
+  fntWB:   (sz=10) => ({ bold:true, color:{ rgb:'FFFFFF' }, sz }),
+  fntDB:   (sz=10) => ({ bold:true, color:{ rgb:'333333' }, sz }),
+  fntD:    ()      => ({ color:{ rgb:'444444' } }),
+  fntFINA: (bold=true) => ({ bold, color:{ rgb:'1565C0' } }),
+  // Alignment
+  aC: { horizontal:'center', vertical:'center' },
+  aL: { horizontal:'left',   vertical:'center' },
+  aR: { horizontal:'right',  vertical:'center' },
+}
+
+function xsCell(ws, r, c, val, fill, font, align) {
+  const ref = XLSX.utils.encode_cell({ r, c })
+  const t   = typeof val === 'number' ? 'n' : 's'
+  ws[ref]   = { v: val ?? '', t: val == null ? 's' : t, s: { fill: fill || {}, font: font || {}, alignment: align || XS.aL } }
+}
+
+function xsMerge(merges, r1, c1, r2, c2) {
+  merges.push({ s:{ r:r1, c:c1 }, e:{ r:r2, c:c2 } })
+}
+
+function xsSetRef(ws, rows, cols) {
+  ws['!ref'] = XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:rows-1, c:cols-1 } })
+}
+
+function xlsxDownload(wb, filename) {
+  const buf  = XLSXStyle.write(wb, { bookType:'xlsx', type:'array' })
+  const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url  = URL.createObjectURL(blob)
+  const a    = Object.assign(document.createElement('a'), { href:url, download:filename })
+  a.click(); URL.revokeObjectURL(url)
+}
+
 // ── Export: Graduatorie Top N ─────────────────────────────────────────────────
 
 function generateTopNExport(allRows, stagione, topN, bestPerAtleta) {
   const wb    = XLSX.utils.book_new()
+  // 5 cat × 5 col (#, ATLETA, TEMPO, FINA, sep) = 25 cols (A-Y)
   const NCOLS = 5
-  const VASCHE = [{ key: '25m', label: '25 METRI' }, { key: '50m', label: '50 METRI' }]
-  const SESSI  = [{ key: 'F',   label: 'FEMMINE'  }, { key: 'M',   label: 'MASCHI'   }]
+  const TCOLS = CAT_ORDER.length * NCOLS   // 25
+
+  const colWidths = []
+  for (let ci = 0; ci < CAT_ORDER.length; ci++) {
+    const b = ci * NCOLS
+    colWidths[b]   = { wch: 3.5 }
+    colWidths[b+1] = { wch: 19  }
+    colWidths[b+2] = { wch: 9   }
+    colWidths[b+3] = { wch: 6.5 }
+    colWidths[b+4] = { wch: 1.2 }
+  }
+
+  const VASCHE = [{ key:'25m', label:'25 METRI' },{ key:'50m', label:'50 METRI' }]
+  const SESSI  = [{ key:'F',   label:'FEMMINE'  },{ key:'M',   label:'MASCHI'   }]
+  const stagLabel = stagione ? stagione.replace(/^(\d{2})-(\d{2})$/, '20$1/20$2') : '—'
 
   for (const vasc of VASCHE) {
     for (const sess of SESSI) {
-      const sheetLabel = `${vasc.label.split(' ')[0]} ${sess.key === 'F' ? 'Femmine' : 'Maschi'}`
-      const rows2d = []
-      const stagLabel = stagione
-        ? stagione.replace(/^(\d{2})-(\d{2})$/, '20$1/20$2')
-        : '—'
+      const ws = {}; ws['!cols'] = colWidths; ws['!rows'] = []; const merges = []
+      let row = 0
 
-      rows2d.push([`GRADUATORIE  Top ${topN}  —  VASCA ${vasc.label}  —  ${sess.label} — Stagione ${stagLabel}`,
-        ...Array(CAT_ORDER.length * NCOLS - 1).fill(null)])
+      // ROW 0 — Title
+      ws['!rows'][row] = { hpx: 24 }
+      xsCell(ws, row, 0, `GRADUATORIE  Top ${topN}  —  VASCA ${vasc.label}  —  ${sess.label === 'F' ? 'FEMMINE' : 'MASCHI'}  —  Stagione ${stagLabel}`,
+        XS.fTitle, XS.fntWBL(13), XS.aC)
+      for (let c=1;c<TCOLS;c++) xsCell(ws, row, c, null, XS.fTitle, XS.fntWBL(13), XS.aC)
+      xsMerge(merges, row, 0, row, TCOLS-1); row++
 
-      const catRow = Array(CAT_ORDER.length * NCOLS).fill(null)
-      CAT_ORDER.forEach((cat, ci) => { catRow[ci * NCOLS] = cat })
-      rows2d.push(catRow)
+      // ROW 1 — Category headers
+      ws['!rows'][row] = { hpx: 18 }
+      CAT_ORDER.forEach((cat, ci) => {
+        const b = ci * NCOLS
+        xsCell(ws, row, b, cat, XS.fCatHdr, XS.fntWB(11), XS.aC)
+        for(let c=1;c<4;c++) xsCell(ws, row, b+c, null, XS.fCatHdr, {}, XS.aC)
+        xsMerge(merges, row, b, row, b+3)
+        xsCell(ws, row, b+4, null, {}, {}, {})
+      }); row++
 
-      const hdrRow = []
-      CAT_ORDER.forEach(() => hdrRow.push('#', 'ATLETA', 'TEMPO', 'FINA', null))
-      rows2d.push(hdrRow)
+      // ROW 2 — Column headers
+      ws['!rows'][row] = { hpx: 14 }
+      CAT_ORDER.forEach((_, ci) => {
+        const b = ci * NCOLS
+        const hcols = [['#', XS.aC],['ATLETA', XS.aL],['TEMPO', XS.aC],['FINA', XS.aR]]
+        hcols.forEach(([h, al], j) => xsCell(ws, row, b+j, h, XS.fColHdr, XS.fntWB(9), al))
+        xsCell(ws, row, b+4, null, {}, {}, {})
+      }); row++
 
+      // DATA — events
       for (const spec of SPEC_ORDER) {
         for (const dist of DIST_ORDER) {
-          const abbr = SPEC_ABBR[spec] || spec
-          const anyData = CAT_ORDER.some(cat => {
-            const base = applyFilters(allRows, { stagione, vasca: vasc.key, sesso: sess.key, specialita: spec, distanza: String(dist) })
-            return (cat === 'ASSOLUTI' ? base : base.filter(r => CAT_FILTER[cat](r.categoria))).length > 0
-          })
-          if (!anyData) continue
-
-          rows2d.push([`  ${dist}m  ${spec}  (${abbr})`, ...Array(CAT_ORDER.length * NCOLS - 1).fill(null)])
-
-          const catAtleti = CAT_ORDER.map(cat => {
-            const base = applyFilters(allRows, { stagione, vasca: vasc.key, sesso: sess.key, specialita: spec, distanza: String(dist) })
-            let filtered = cat === 'ASSOLUTI' ? base : base.filter(r => CAT_FILTER[cat](r.categoria))
+          const catData = CAT_ORDER.map(cat => {
+            const base = applyFilters(allRows, { stagione, vasca:vasc.key, sesso:sess.key, specialita:spec, distanza:String(dist) })
+            let filtered = cat==='ASSOLUTI' ? base : base.filter(r => CAT_FILTER[cat](r.categoria))
             if (bestPerAtleta) filtered = deduplicateBest(filtered)
-            filtered.sort((a, b) => b.fina - a.fina)
-            return filtered.slice(0, topN)
+            return filtered.sort((a,b)=>b.fina-a.fina).slice(0, topN)
           })
+          if (!catData.some(a=>a.length>0)) continue
 
-          for (let i = 0; i < topN; i++) {
-            const dataRow = []
-            catAtleti.forEach(atleti => {
-              const r = atleti[i]
-              dataRow.push(r ? i + 1 : null, r ? r.atleta : null, r ? r.tempoFmt : null, r ? Math.round(r.fina) : ' ', null)
-            })
-            rows2d.push(dataRow)
+          // Event label row
+          ws['!rows'][row] = { hpx: 20 }
+          xsCell(ws, row, 0, `  ${dist}m  ${spec}  (${SPEC_ABBR[spec]||spec})`, XS.fEvt, XS.fntWB(10), XS.aL)
+          for (let c=1;c<TCOLS;c++) xsCell(ws, row, c, null, XS.fEvt, {}, {})
+          xsMerge(merges, row, 0, row, TCOLS-1); row++
+
+          // Data rows
+          const maxLen = Math.max(...catData.map(a=>a.length))
+          for (let i=0; i<maxLen; i++) {
+            ws['!rows'][row] = { hpx: 15 }
+            const fillRow = i%2===0 ? XS.fOdd : XS.fEven
+            CAT_ORDER.forEach((_, ci) => {
+              const b = ci * NCOLS; const r = catData[ci][i]
+              xsCell(ws, row, b,   r ? i+1 : null, fillRow, r ? XS.fntDB(9) : {}, XS.aC)
+              xsCell(ws, row, b+1, r ? r.atleta : null, fillRow, XS.fntD(), XS.aL)
+              xsCell(ws, row, b+2, r ? r.tempoFmt : null, fillRow, XS.fntD(), XS.aC)
+              xsCell(ws, row, b+3, r ? Math.round(r.fina) : null, fillRow, XS.fntFINA(!!r), XS.aR)
+              xsCell(ws, row, b+4, null, {}, {}, {})
+            }); row++
           }
-          rows2d.push(Array(CAT_ORDER.length * NCOLS).fill(null))
+
+          // Spacer
+          ws['!rows'][row] = { hpx: 5 }
+          row++
         }
       }
 
-      const ws = XLSX.utils.aoa_to_sheet(rows2d)
-      ws['!cols'] = Array(CAT_ORDER.length * NCOLS).fill(null).map((_, i) => {
-        const p = i % NCOLS
-        if (p === 4) return { wch: 2 }
-        if (p === 1) return { wch: 22 }
-        if (p === 2) return { wch: 10 }
-        if (p === 0) return { wch: 4 }
-        return { wch: 6 }
-      })
+      ws['!merges'] = merges
+      xsSetRef(ws, row, TCOLS)
+      const sheetLabel = `${vasc.key==='25m'?'25':'50'} ${sess.key==='F'?'Femmine':'Maschi'}`
       XLSX.utils.book_append_sheet(wb, ws, sheetLabel)
     }
   }
 
-  const stagFile = stagione ? stagione.replace('-', '_') : 'tutte'
-  XLSX.writeFile(wb, `Graduatorie_Top${topN}_${stagFile}.xlsx`)
+  const stagFile = stagione ? stagione.replace('-','_') : 'tutte'
+  xlsxDownload(wb, `Graduatorie_Top${topN}_${stagFile}.xlsx`)
 }
 
 // ── Export: Staffette ─────────────────────────────────────────────────────────
 
 function generateStaffetteExport(allRows, stagione) {
-  const wb    = XLSX.utils.book_new()
-  const NCOLS = 6
-  const VASCHE = [{ key: '25m', label: '25 METRI' }, { key: '50m', label: '50 METRI' }]
-  const SESSI  = [{ key: 'F',   label: 'FEMMINE'  }, { key: 'M',   label: 'MASCHI'   }]
+  const wb = XLSX.utils.book_new()
+  // 5 cat: cat0-3 → 6 col (#,RUOLO,ATLETA,TEMPO,FINA,sep), cat4 → 5 col (no sep) = 29 cols
+  const NCOLS  = 6
+  const TCOLS  = CAT_ORDER.length * NCOLS - 1   // 29
+
+  const colWidths = []
+  for (let ci = 0; ci < CAT_ORDER.length; ci++) {
+    const b = ci * NCOLS
+    colWidths[b]   = { wch: 3.5  }
+    colWidths[b+1] = { wch: 6.0  }
+    colWidths[b+2] = { wch: 22.0 }
+    colWidths[b+3] = { wch: 10.0 }
+    colWidths[b+4] = { wch: 6.5  }
+    if (ci < CAT_ORDER.length-1) colWidths[b+5] = { wch: 1.5 }
+  }
+
+  const VASCHE = [{ key:'25m', label:'25 METRI' },{ key:'50m', label:'50 METRI' }]
+  const SESSI  = [{ key:'F',   label:'FEMMINE'  },{ key:'M',   label:'MASCHI'   }]
+  const FRAZ_F = XS.fFraz   // fills for FRAZ 1-4 data cols
+  const RIS_F  = XS.fRis    // fills for RIS 1-3 data cols
 
   for (const staffDef of STAFFETTE_DEF) {
     const vascheDa = staffDef.solo25 ? [VASCHE[0]] : VASCHE
     for (const vasc of vascheDa) {
       for (const sess of SESSI) {
-        const sx        = sess.key
-        const vNum      = vasc.key.replace('m', '')
-        const sheetName = `${staffDef.sheet} - ${vNum}${sx}`
-        const rows2d    = []
+        const ws = {}; ws['!cols'] = colWidths; ws['!rows'] = []; const merges = []
+        let row = 0
+        const vNum = vasc.key.replace('m','')
+        const sheetName = `${staffDef.sheet} - ${vNum}${sess.key}`
 
-        rows2d.push([`  STAFFETTA ${staffDef.sheet}  —  VASCA ${vasc.label}  —  ${sess.label}`,
-          ...Array(CAT_ORDER.length * NCOLS - 1).fill(null)])
+        // ROW 0 — Title
+        ws['!rows'][row] = { hpx: 30 }
+        xsCell(ws, row, 0, `  STAFFETTA ${staffDef.sheet}  —  VASCA ${vasc.label}  —  ${sess.key==='F'?'FEMMINE':'MASCHI'}`,
+          XS.fSTitle, XS.fntWBL(13), XS.aL)
+        for (let c=1;c<TCOLS;c++) xsCell(ws, row, c, null, XS.fSTitle, {}, {})
+        xsMerge(merges, row, 0, row, TCOLS-1); row++
 
-        const catRow = Array(CAT_ORDER.length * NCOLS).fill(null)
-        CAT_ORDER.forEach((cat, ci) => { catRow[ci * NCOLS] = cat })
-        rows2d.push(catRow)
+        // ROW 1 — Category headers
+        ws['!rows'][row] = { hpx: 22 }
+        CAT_ORDER.forEach((cat, ci) => {
+          const b = ci * NCOLS
+          const endC = ci < CAT_ORDER.length-1 ? b+4 : b+4   // merge data cols only
+          xsCell(ws, row, b, cat, XS.fSCatHdr, XS.fntWB(11), XS.aC)
+          for(let c=1;c<=4;c++) xsCell(ws, row, b+c, null, XS.fSCatHdr, {}, {})
+          xsMerge(merges, row, b, row, b+4)
+          if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+        }); row++
 
-        const hdrRow = []
-        CAT_ORDER.forEach(() => hdrRow.push('#', 'RUOLO', 'ATLETA', 'TEMPO', 'FINA', null))
-        rows2d.push(hdrRow)
+        // ROW 2 — Column headers
+        ws['!rows'][row] = { hpx: 18 }
+        CAT_ORDER.forEach((_, ci) => {
+          const b = ci * NCOLS
+          const hcols = [['#',XS.aC],['RUOLO',XS.aC],['ATLETA',XS.aL],['TEMPO',XS.aC],['FINA',XS.aR]]
+          hcols.forEach(([h,al],j) => xsCell(ws, row, b+j, h, XS.fSColHdr, XS.fntDB(9), al))
+          if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+        }); row++
 
+        // Get athletes
         const catAtleti = CAT_ORDER.map(cat => {
-          const base = applyFilters(allRows, { stagione, vasca: vasc.key, sesso: sess.key, specialita: staffDef.spec, distanza: String(staffDef.dist) })
-          let filtered = cat === 'ASSOLUTI' ? base : base.filter(r => CAT_FILTER[cat](r.categoria))
+          const base = applyFilters(allRows, { stagione, vasca:vasc.key, sesso:sess.key, specialita:staffDef.spec, distanza:String(staffDef.dist) })
+          let filtered = cat==='ASSOLUTI' ? base : base.filter(r => CAT_FILTER[cat](r.categoria))
           filtered = deduplicateBest(filtered)
-          filtered.sort((a, b) => b.fina - a.fina)
-          return filtered.slice(0, 7)
+          return filtered.sort((a,b)=>b.fina-a.fina).slice(0,7)
         })
 
-        for (let i = 0; i < 4; i++) {
-          const row = []
-          catAtleti.forEach(atleti => {
-            const r = atleti[i]
-            row.push(i + 1, `FRAZ ${i + 1}`, r ? r.atleta : null, r ? r.tempoFmt : null, r ? Math.round(r.fina) : '—', null)
-          })
-          rows2d.push(row)
+        // FRAZ 1-4
+        for (let i=0; i<4; i++) {
+          ws['!rows'][row] = { hpx: 22 }
+          const dataFill = FRAZ_F[i]
+          CAT_ORDER.forEach((_, ci) => {
+            const b = ci * NCOLS; const r = catAtleti[ci][i]
+            xsCell(ws, row, b,   i+1,           XS.fFrazLbl, XS.fntWB(10), XS.aC)
+            xsCell(ws, row, b+1, `FRAZ ${i+1}`, XS.fFrazLbl, XS.fntWB(10), XS.aC)
+            xsCell(ws, row, b+2, r?r.atleta:null,   dataFill, XS.fntD(), XS.aL)
+            xsCell(ws, row, b+3, r?r.tempoFmt:null,  dataFill, XS.fntD(), XS.aC)
+            xsCell(ws, row, b+4, r?Math.round(r.fina):null, dataFill, XS.fntFINA(!!r), XS.aR)
+            if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+          }); row++
         }
 
-        const totRow = []
-        catAtleti.forEach(atleti => {
-          const tit   = atleti.slice(0, 4)
-          const total = tit.length === 4 && tit.every(r => r) ? sumTempi(tit.map(r => r.tempo)) : '—'
-          totRow.push('TOTALE', null, total, null, null, null)
-        })
-        rows2d.push(totRow)
+        // TOTALE
+        ws['!rows'][row] = { hpx: 22 }
+        CAT_ORDER.forEach((_, ci) => {
+          const b = ci * NCOLS
+          const tit   = catAtleti[ci].slice(0,4)
+          const total = tit.length===4 && tit.every(r=>r) ? sumTempi(tit.map(r=>r.tempo)) : '—'
+          xsCell(ws, row, b,   'TOTALE', XS.fTotLbl, XS.fntWB(10), XS.aC)
+          xsCell(ws, row, b+1, null,    XS.fTotLbl, {}, {})
+          xsMerge(merges, row, b, row, b+1)
+          xsCell(ws, row, b+2, total, XS.fTotData, { bold:true, color:{ rgb:'333333' }, sz:10 }, XS.aC)
+          xsCell(ws, row, b+3, null,  XS.fTotData, {}, {})
+          xsCell(ws, row, b+4, null,  XS.fTotData, {}, {})
+          xsMerge(merges, row, b+2, row, b+4)
+          if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+        }); row++
 
-        const risHdr = Array(CAT_ORDER.length * NCOLS).fill(null)
-        CAT_ORDER.forEach((_, ci) => { risHdr[ci * NCOLS] = '▼  RISERVE' })
-        rows2d.push(risHdr)
+        // RISERVE header
+        ws['!rows'][row] = { hpx: 14 }
+        CAT_ORDER.forEach((_, ci) => {
+          const b = ci * NCOLS
+          xsCell(ws, row, b, '▼  RISERVE', XS.fRisHdr, XS.fntWB(9), XS.aC)
+          for(let c=1;c<=4;c++) xsCell(ws, row, b+c, null, XS.fRisHdr, {}, {})
+          xsMerge(merges, row, b, row, b+4)
+          if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+        }); row++
 
-        for (let i = 0; i < 3; i++) {
-          const row = []
-          catAtleti.forEach(atleti => {
-            const r = atleti[4 + i]
-            row.push(i + 1, `RIS ${i + 1}`, r ? r.atleta : null, r ? r.tempoFmt : null, r ? Math.round(r.fina) : '—', null)
-          })
-          rows2d.push(row)
+        // RIS 1-3
+        for (let i=0; i<3; i++) {
+          ws['!rows'][row] = { hpx: 22 }
+          const dataFill = RIS_F[i]
+          CAT_ORDER.forEach((_, ci) => {
+            const b = ci * NCOLS; const r = catAtleti[ci][4+i]
+            xsCell(ws, row, b,   i+1,          XS.fRisHdr, XS.fntWB(10), XS.aC)
+            xsCell(ws, row, b+1, `RIS ${i+1}`, XS.fRisHdr, XS.fntWB(10), XS.aC)
+            xsCell(ws, row, b+2, r?r.atleta:null,  dataFill, XS.fntD(), XS.aL)
+            xsCell(ws, row, b+3, r?r.tempoFmt:null, dataFill, XS.fntD(), XS.aC)
+            xsCell(ws, row, b+4, r?Math.round(r.fina):null, dataFill, XS.fntFINA(false), XS.aR)
+            if (ci < CAT_ORDER.length-1) xsCell(ws, row, b+5, null, {}, {}, {})
+          }); row++
         }
 
-        const ws = XLSX.utils.aoa_to_sheet(rows2d)
-        ws['!cols'] = Array(CAT_ORDER.length * NCOLS).fill(null).map((_, i) => {
-          const p = i % NCOLS
-          if (p === 5) return { wch: 2 }
-          if (p === 2) return { wch: 22 }
-          if (p === 3) return { wch: 10 }
-          if (p === 1) return { wch: 8 }
-          if (p === 0) return { wch: 4 }
-          return { wch: 6 }
-        })
+        // Spacer
+        ws['!rows'][row] = { hpx: 10 }; row++
+
+        ws['!merges'] = merges
+        xsSetRef(ws, row, TCOLS)
         XLSX.utils.book_append_sheet(wb, ws, sheetName)
       }
     }
   }
 
-  const stagFile = stagione ? stagione.replace('-', '_') : 'tutte'
-  XLSX.writeFile(wb, `Staffette_${stagFile}.xlsx`)
+  const stagFile = stagione ? stagione.replace('-','_') : 'tutte'
+  xlsxDownload(wb, `Staffette_${stagFile}.xlsx`)
 }
 
 // ── Componente ────────────────────────────────────────────────────────────────
@@ -392,6 +528,7 @@ export default function Graduatorie() {
   const [lastUpdate, setLastUpdate] = useState(() => localStorage.getItem('grad_lastupdate') || '')
   const [loadingFile, setLoadingFile] = useState(false)
   const [syncing,    setSyncing]    = useState(false)
+  const [cloudLoading, setCloudLoading] = useState(false)
   const [error,      setError]      = useState('')
 
   const [stagione,   setStagione]   = useState('')
@@ -407,18 +544,26 @@ export default function Graduatorie() {
   const [sortCol,     setSortCol]     = useState('posGrad')
   const [sortDir,     setSortDir]     = useState(1)
 
-  useEffect(() => {
-    if (allRows.length > 0) return
+  const handleCloudLoad = useCallback(() => {
+    setCloudLoading(true); setError('')
     cloudLoad()
       .then(data => {
         if (data?.rows?.length > 0) {
           setAllRows(data.rows)
           lsSet(CACHE_KEY, data.rows)
           const ts = data.timestamp ? new Date(data.timestamp).toLocaleString('it-IT') : ''
-          setLastUpdate(prev => prev || (ts ? `Da cloud · ${ts}` : 'Da cloud'))
+          setLastUpdate(`Da cloud · ${ts || '—'}`)
+        } else {
+          setError('Nessun dato trovato su Firebase. Carica prima un file xlsx.')
         }
       })
-      .catch(() => {})
+      .catch(e => setError(`Errore Firebase: ${e.message}`))
+      .finally(() => setCloudLoading(false))
+  }, [])
+
+  useEffect(() => {
+    if (allRows.length > 0) return
+    handleCloudLoad()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stagioniOpts   = useMemo(() => [...new Set(allRows.map(r => r.stagione))].filter(Boolean).sort(), [allRows])
@@ -538,19 +683,21 @@ export default function Graduatorie() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-bold text-sb-text">Graduatorie</h1>
-          {lastUpdate && (
-            <p className="text-xs text-sb-muted mt-0.5">
-              {syncing ? '☁ Sincronizzazione...' : `Aggiornato: ${lastUpdate}`}
-              {allRows.length > 0 && ` · ${allRows.length.toLocaleString('it-IT')} risultati`}
-              {stagioniOpts.length > 0 && ` · Stagioni: ${stagioniOpts.join(', ')}`}
-            </p>
-          )}
+          <p className="text-xs text-sb-muted mt-0.5">
+            {cloudLoading ? '☁ Caricamento da cloud...' : syncing ? '☁ Sincronizzazione...' : lastUpdate ? `Aggiornato: ${lastUpdate}` : ''}
+            {allRows.length > 0 && ` · ${allRows.length.toLocaleString('it-IT')} risultati`}
+            {stagioniOpts.length > 0 && ` · Stagioni: ${stagioniOpts.join(', ')}`}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple className="hidden" onChange={handleFileChange} />
           <button onClick={() => fileInputRef.current?.click()} disabled={loadingFile}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-sb-blue text-white text-sm font-medium rounded-lg hover:bg-sb-blue/90 disabled:opacity-50 transition-colors">
             {loadingFile ? '⏳ Caricamento...' : '📂 Carica file xlsx'}
+          </button>
+          <button onClick={handleCloudLoad} disabled={cloudLoading}
+            className="px-3 py-1.5 text-sm text-sb-blue border border-sb-blue/30 rounded-lg hover:bg-sb-blue/10 disabled:opacity-50 transition-colors">
+            {cloudLoading ? '⏳' : '☁'} Da cloud
           </button>
           {allRows.length > 0 && (
             <button onClick={handleClear}
