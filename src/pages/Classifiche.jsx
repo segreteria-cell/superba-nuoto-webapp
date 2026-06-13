@@ -136,6 +136,9 @@ export default function Classifiche() {
   const handleCerca = useCallback(async () => {
     if (!utente || !password) { setError("Inserisci credenziali AquaTime"); return }
     setLoading(true); setError(""); setProgressMsg(""); setProgressPct(0); setFound(0)
+    // Accumula righe localmente — aggiornate progressivamente dallo stream
+    let accumulated = []
+    let lastSave = 0
     try {
       const res = await fetch(`${API_BASE}/api/aqt/cerca`, {
         method: "POST",
@@ -165,16 +168,22 @@ export default function Classifiche() {
               setProgressPct(msg.pct)
               setFound(msg.found)
               setProgressMsg(`${msg.cat}  |  ${msg.gara}  |  ${msg.sesso}  |  ${msg.vasca}`)
+              // Accumula righe ricevute in questo messaggio
+              if (msg.new_rows?.length) {
+                accumulated = accumulated.concat(msg.new_rows)
+                // Salva in localStorage ogni 40 step per resilienza
+                if (msg.step - lastSave >= 40) {
+                  localStorage.setItem(CACHE_KEY, JSON.stringify(accumulated))
+                  lastSave = msg.step
+                }
+              }
             } else if (msg.type === "error") {
               throw new Error(msg.msg)
             } else if (msg.type === "done") {
-              const rows = msg.rows || []
-              setAllRows(rows)
               const now = new Date().toLocaleString("it-IT")
               setLastUpdate(now)
-              localStorage.setItem(CACHE_KEY, JSON.stringify(rows))
               localStorage.setItem("aqt_lastupdate", now)
-              if (msg.errori?.length) setError(`Download completato con ${msg.errori.length} errori di rete`)
+              if (msg.errori?.length) setError(`Download con ${msg.errori.length} errori di rete`)
             }
           } catch (parseErr) {
             if (parseErr.message !== "Unexpected end of JSON input") throw parseErr
@@ -184,6 +193,14 @@ export default function Classifiche() {
     } catch (e) {
       setError(`Errore: ${e.message}`)
     } finally {
+      // Aggiorna lo stato con tutto il raccolto (anche se "done" non è arrivato)
+      if (accumulated.length > 0) {
+        setAllRows(accumulated)
+        const now = new Date().toLocaleString("it-IT")
+        setLastUpdate(now)
+        localStorage.setItem(CACHE_KEY, JSON.stringify(accumulated))
+        localStorage.setItem("aqt_lastupdate", now)
+      }
       setLoading(false); setProgressMsg(""); setProgressPct(0)
     }
   }, [utente, password, stagione])

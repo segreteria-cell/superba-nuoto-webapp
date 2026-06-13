@@ -243,7 +243,7 @@ def cerca():
 
         yield json.dumps({"type": "status", "msg": f"Avvio download ({totale} richieste, 4 parallele)..."}) + "\n"
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             future_map = {
                 executor.submit(fetch_task, t, cookies, req_headers, stagione): t
                 for t in tasks
@@ -262,20 +262,20 @@ def cerca():
                     rows = []
 
                 yield json.dumps({
-                    "type":  "progress",
-                    "pct":   pct,
-                    "step":  step,
-                    "total": totale,
-                    "cat":   t[0],
-                    "gara":  t[1],
-                    "sesso": t[2],
-                    "vasca": t[4],
-                    "found": len(tutti),
+                    "type":     "progress",
+                    "pct":      pct,
+                    "step":     step,
+                    "total":    totale,
+                    "cat":      t[0],
+                    "gara":     t[1],
+                    "sesso":    t[2],
+                    "vasca":    t[4],
+                    "found":    len(tutti),
+                    "new_rows": rows,
                 }) + "\n"
 
         yield json.dumps({
             "type":     "done",
-            "rows":     tutti,
             "totale":   len(tutti),
             "errori":   errori,
             "stagione": stagione,
