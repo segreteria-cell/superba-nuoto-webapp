@@ -42,17 +42,22 @@ async function cloudLoadMeta() {
   return JSON.parse(LZString.decompress(val.data))
 }
 
-// RTDB: salva PDF (base64 compresso)
+// RTDB: salva PDF — compressToBase64 produce ASCII puro, sicuro per Firebase
 async function cloudSaveFile(id, base64) {
-  await rtdbSet(rtdbRef(rtdb, 'regolamenti/files/' + id), LZString.compress(base64))
+  const compressed = LZString.compressToBase64(base64)
+  await rtdbSet(rtdbRef(rtdb, 'regolamenti/files/' + id), compressed)
 }
 
 // RTDB: carica PDF per visualizzazione
 async function cloudLoadFile(id) {
   const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/files/' + id))
-
-  if (!snap.exists()) return null
-  return LZString.decompress(snap.val())
+  if (!snap.exists()) {
+    console.warn('[Regolamenti] file non trovato in RTDB per id:', id)
+    return null
+  }
+  const decompressed = LZString.decompressFromBase64(snap.val())
+  console.log('[Regolamenti] decompressed length:', decompressed?.length)
+  return decompressed || null
 }
 
 // RTDB: elimina PDF
@@ -180,7 +185,7 @@ export default function Regolamenti() {
     setViewLoading(true); setError('')
     try {
       const base64 = await cloudLoadFile(item.id)
-      if (!base64) { setError('File non trovato su cloud.'); return }
+      if (!base64) { setError('File non trovato: elimina questo documento e ricarica il PDF con il pulsante ⬆ Carica PDF.'); return }
       setViewer({ id: item.id, nome: item.nome, base64 })
     } catch (e) {
       setError('Errore caricamento PDF: ' + e.message)
