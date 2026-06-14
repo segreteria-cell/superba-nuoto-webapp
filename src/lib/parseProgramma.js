@@ -6,10 +6,9 @@
  */
 
 import * as pdfjsLib from 'pdfjs-dist'
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString()
+// Worker via CDN - evita problemi Vite/GitHub Pages con new URL()
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 
 // ── normalizzatori ─────────────────────────────────────────────────────────────
 
@@ -47,12 +46,23 @@ export async function extractPdfText(base64) {
   const bytes  = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   const pdf    = await pdfjsLib.getDocument({ data: bytes }).promise
+  console.log('[PDF] pagine:', pdf.numPages)
   let text = ''
   for (let p = 1; p <= pdf.numPages; p++) {
     const page    = await pdf.getPage(p)
     const content = await page.getTextContent()
-    text += content.items.map(i => i.str).join(' ') + '\n'
+    // Ricostruisce le righe raggruppando per y-position
+    const byY = {}
+    for (const item of content.items) {
+      if (!item.str.trim()) continue
+      const y = Math.round(item.transform[5])
+      if (!byY[y]) byY[y] = []
+      byY[y].push(item.str)
+    }
+    const sortedY = Object.keys(byY).map(Number).sort((a, b) => b - a)
+    for (const y of sortedY) text += byY[y].join(' ') + '\n'
   }
+  console.log('[PDF] testo estratto (prime 500 chars):', text.slice(0, 500))
   return text
 }
 
