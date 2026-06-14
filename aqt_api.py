@@ -175,15 +175,23 @@ def fetch_task(task, cookies, headers, stagione):
     cat_id   = AQT_CATEGORIE.get(cat, "9")
     gara_id  = AQT_GARE.get(gara, "43")
     sesso_id = "1" if sesso_str == "Maschi" else "2"
-    url = (
-        f"{AQT_BASE}/records.php"
-        f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
-        f"&tipoG=2&Vasca={vasca_id}&Sesso={sesso_id}"
-        f"&TipoTempi=2&SoloSoc=0&comi=1&page=1"
-    )
-    try:
+
+    def _fetch(tipo_g):
+        url = (
+            f"{AQT_BASE}/records.php"
+            f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
+            f"&tipoG={tipo_g}&Vasca={vasca_id}&Sesso={sesso_id}"
+            f"&TipoTempi=2&SoloSoc=0&comi=1&page=1"
+        )
         r = requests.get(url, cookies=cookies, headers=headers, timeout=12)
-        rows = parse_table(r.text, gara, cat, sesso_str, stagione, vasca_lbl)
+        return parse_table(r.text, gara, cat, sesso_str, stagione, vasca_lbl)
+
+    try:
+        rows = _fetch(2)
+        # Fallback condizionale: solo se tipoG=2 non ha restituito nulla
+        if not rows:
+            time.sleep(0.3)
+            rows = _fetch(0)
         return rows, None
     except Exception as e:
         return [], f"{cat}|{gara}|{sesso_str}|{vasca_lbl}: {e}"
