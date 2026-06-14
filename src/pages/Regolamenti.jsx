@@ -1,6 +1,51 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ref as rtdbRef, set, get, remove, push } from 'firebase/database'
+import LZString from 'lz-string'
+import { ref as rtdbRef, set as rtdbSet, get as rtdbGet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
+
+// ── RTDB helpers (stesso pattern di Classifiche / Graduatorie) ────────────────
+
+const RTDB_PATH = 'regolamenti'
+const LS_KEY    = 'reg_docs'
+
+async function cloudSave(docs) {
+  const compressed = LZString.compress(JSON.stringify(docs))
+  await rtdbSet(rtdbRef(rtdb, RTDB_PATH), {
+    timestamp: new Date().toISOString(),
+    total:     docs.length,
+    data:      compressed,
+  })
+}
+
+async function cloudLoad() {
+  const snap = await rtdbGet(rtdbRef(rtdb, RTDB_PATH))
+  if (!snap.exists()) return null
+  const val = snap.val()
+  return {
+    docs:      JSON.parse(LZString.decompress(val.data)),
+    timestamp: val.timestamp,
+  }
+}
+
+const lsGet = (key, fallback = null) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+    const dec = LZString.decompress(raw)
+    return JSON.parse(dec || raw)
+  } catch { return fallback }
+}
+
+const lsSet = (key, value) => {
+  try {
+    localStorage.setItem(key, LZString.compress(JSON.stringify(value)))
+  } catch (e) {
+    console.warn('localStorage write failed:', e.message)
+    try { localStorage.removeItem(key) } catch {}
+  }
+}
+
+// ── Costanti UI ───────────────────────────────────────────────────────────────
 
 const CATEGORIE  = ['Tutti', 'Nazionali FIN', 'Regionali', 'CSI', 'Master', 'Altro']
 const CAT_COLORS = {
@@ -23,67 +68,61 @@ function formatDate(iso) {
   catch { return '' }
 }
 
-// ── RTDB helpers ──────────────────────────────────────────────────────────────
-
-async function rtdbFetch() {
-  const snap = await get(rtdbRef(rtdb, 'regolamenti'))
-  if (!snap.exists()) return []
-  const val = snap.val()
-  return Object.entries(val)
-    .map(([id, data]) => ({ id, ...data }))
-    .sort((a, b) => (b.caricato || '').localeCompare(a.caricato || ''))
-}
-
-async function rtdbAdd(item) {
-  const newRef = push(rtdbRef(rtdb, 'regolamenti'))
-  await set(newRef, item)
-  return newRef.key
-}
-
-async function rtdbDelete(id) {
-  await remove(rtdbRef(rtdb, 'regolamenti/' + id))
-}
-
 // ── Componente ────────────────────────────────────────────────────────────────
 
 export default function Regolamenti() {
-  const [docs,      setDocs]      = useState([])
-  const [loading,   setLoading]   = useState(true)
-  const [saving,    setSaving]    = useState(false)
-  const [catFilter, setCatFilter] = useState('Tutti')
-  const [search,    setSearch]    = useState('')
-  const [viewer,    setViewer]    = useState(null)
-  const [deleting,  setDeleting]  = useState(null)
-  const [form,      setForm]      = useState({ nome: '', categoria: 'Nazionali FIN', url: '', note: '' })
-  const [error,     setError]     = useState('')
+  const [docs,        setDocs]        = useState(() => lsGet(LS_KEY, []))
+  const [lastUpdate,  setLastUpdate]  = useState('')
+  const [cloudLoading,setCloudLoading]= useState(false)
+  const [saving,      setSaving]      = useState(false)
+  const [catFilter,   setCatFilter]   = useState('Tutti')
+  const [search,      setSearch]      = useState('')
+  const [viewer,      setViewer]      = useState(null)
+  const [deleting,    setDeleting]    = useState(null)
+  const [form,        setForm]        = useState({ nome: '', categoria: 'Nazionali FIN', url: '', note: '' })
+  const [error,       setError]       = useState('')
 
-  const fetchDocs = useCallback(async () => {
-    setLoading(true); setError('')
-    try {
-      setDocs(await rtdbFetch())
-    } catch (e) {
-      setError('Errore caricamento: ' + e.message)
-    } finally {
-      setLoading(false)
-    }
+  // Al mount: carica da localStorage (istantaneo), poi aggiorna da cloud
+  const handleCloudLoad = useCallback(() => {
+    setCloudLoading(true); setError('')
+    cloudLoad()
+      .then(result => {
+        if (result?.docs) {
+          setDocs(result.docs)
+          lsSet(LS_KEY, result.docs)
+          const ts = result.timestamp ? new Date(result.timestamp).toLocaleString('it-IT') : ''
+          setLastUpdate('Da cloud · ' + (ts || '—'))
+        } else {
+          setLastUpdate('Nessun dato su cloud')
+        }
+      })
+      .catch(e => setError('Errore Firebase: ' + e.message))
+      .finally(() => setCloudLoading(false))
   }, [])
 
-  useEffect(() => { fetchDocs() }, [fetchDocs])
+  useEffect(() => {
+    if (docs.length === 0) handleCloudLoad()
+    else setLastUpdate('Da cache locale')
+  }, []) // eslint-disable-line
 
   async function handleSave() {
     if (!form.nome.trim()) { setError('Inserisci un nome.'); return }
     if (!form.url.trim())  { setError('Inserisci il link Google Drive.'); return }
     setSaving(true); setError('')
     try {
-      const item = {
+      const newDoc = {
+        id:        Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         nome:      form.nome.trim(),
         categoria: form.categoria,
         url:       form.url.trim(),
         note:      form.note.trim(),
         caricato:  new Date().toISOString(),
       }
-      const id = await rtdbAdd(item)
-      setDocs(prev => [{ id, ...item }, ...prev])
+      const updated = [newDoc, ...docs]
+      setDocs(updated)
+      lsSet(LS_KEY, updated)
+      await cloudSave(updated)
+      setLastUpdate('Salvato · ' + new Date().toLocaleString('it-IT'))
       setForm({ nome: '', categoria: 'Nazionali FIN', url: '', note: '' })
     } catch (e) {
       setError('Errore salvataggio: ' + e.message)
@@ -96,9 +135,12 @@ export default function Regolamenti() {
     if (!confirm('Eliminare "' + item.nome + '"?')) return
     setDeleting(item.id)
     try {
-      await rtdbDelete(item.id)
-      setDocs(prev => prev.filter(d => d.id !== item.id))
+      const updated = docs.filter(d => d.id !== item.id)
+      setDocs(updated)
+      lsSet(LS_KEY, updated)
+      await cloudSave(updated)
       if (viewer && viewer.id === item.id) setViewer(null)
+      setLastUpdate('Salvato · ' + new Date().toLocaleString('it-IT'))
     } catch (e) {
       setError('Errore eliminazione: ' + e.message)
     } finally {
@@ -122,12 +164,14 @@ export default function Regolamenti() {
         <div className="px-5 py-4">
           <p className="text-sm font-bold text-sb-text mb-3">Aggiungi Regolamento</p>
           <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex-1 min-w-48">
+
+            <div className="flex-1 min-w-44">
               <label className="block text-xs text-sb-muted font-medium mb-1">Nome</label>
               <input value={form.nome} onChange={e => setForm(f => ({ ...f, nome: e.target.value }))}
                 className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue"
                 placeholder="Es. Campionati Italiani 2025" />
             </div>
+
             <div>
               <label className="block text-xs text-sb-muted font-medium mb-1">Categoria</label>
               <select value={form.categoria} onChange={e => setForm(f => ({ ...f, categoria: e.target.value }))}
@@ -135,23 +179,27 @@ export default function Regolamenti() {
                 {CATEGORIE.filter(c => c !== 'Tutti').map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
+
             <div className="flex-1 min-w-64">
               <label className="block text-xs text-sb-muted font-medium mb-1">Link Google Drive</label>
               <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
                 className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue"
                 placeholder="https://drive.google.com/file/d/..." />
             </div>
+
             <div className="flex-1 min-w-32">
               <label className="block text-xs text-sb-muted font-medium mb-1">Note (opzionale)</label>
               <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
                 className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue"
                 placeholder="Es. tempi limite, criteri..." />
             </div>
+
             <button onClick={handleSave} disabled={saving}
               className="px-5 py-2 bg-sb-green text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50">
               {saving ? 'Salvataggio...' : '+ Aggiungi'}
             </button>
           </div>
+
           <p className="text-xs text-sb-muted mt-2">
             Su Google Drive: tasto destro sul PDF → <strong>Condividi</strong> → <strong>Chiunque abbia il link</strong> → copia il link.
           </p>
@@ -159,7 +207,7 @@ export default function Regolamenti() {
         </div>
       </div>
 
-      {/* Filtri */}
+      {/* Filtri + stato cloud */}
       <div className="bg-sb-panel rounded-2xl border border-sb-sep shadow-sm px-5 py-3 flex flex-wrap gap-3 items-center">
         <div className="flex gap-1.5 flex-wrap">
           {CATEGORIE.map(c => (
@@ -175,26 +223,24 @@ export default function Regolamenti() {
             placeholder="Cerca per nome o note..."
             className="w-full border border-sb-sep rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sb-blue" />
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-sb-muted">{filtered.length} document{filtered.length !== 1 ? 'i' : 'o'}</span>
-          <button onClick={fetchDocs} disabled={loading}
-            className="text-xs text-sb-blue hover:underline disabled:opacity-50">
-            {loading ? '⏳' : '↺'} Aggiorna
+        <div className="flex items-center gap-3 text-xs text-sb-muted">
+          {lastUpdate && <span>{lastUpdate}</span>}
+          <button onClick={handleCloudLoad} disabled={cloudLoading}
+            className="text-sb-blue hover:underline disabled:opacity-50 font-medium">
+            {cloudLoading ? '⏳ Caricamento...' : '↺ Da cloud'}
           </button>
+          <span>{filtered.length} doc</span>
         </div>
       </div>
 
       <div className="flex gap-3" style={{ minHeight: 0, flex: 1 }}>
-        {/* Lista */}
-        <div className="flex flex-col gap-2" style={{ width: viewer ? '360px' : '100%', flexShrink: 0 }}>
-          {loading ? (
-            <div className="bg-sb-panel rounded-2xl border border-sb-sep p-8 text-center text-sb-muted text-sm">
-              Caricamento...
-            </div>
-          ) : filtered.length === 0 ? (
+
+        {/* Lista documenti */}
+        <div className="flex flex-col gap-2" style={{ width: viewer ? '380px' : '100%', flexShrink: 0 }}>
+          {filtered.length === 0 ? (
             <div className="bg-sb-panel rounded-2xl border border-sb-sep p-8 text-center">
               <p className="text-sb-muted text-sm">
-                {docs.length === 0 ? 'Nessun regolamento aggiunto' : 'Nessun risultato'}
+                {docs.length === 0 ? 'Nessun regolamento. Aggiungine uno sopra.' : 'Nessun risultato.'}
               </p>
             </div>
           ) : filtered.map(item => (
@@ -204,7 +250,11 @@ export default function Regolamenti() {
                 (viewer && viewer.id === item.id ? 'border-sb-blue bg-blue-50/30' : 'border-sb-sep hover:border-sb-blue')
               }
               onClick={() => setViewer(viewer && viewer.id === item.id ? null : { id: item.id, url: toEmbedUrl(item.url), nome: item.nome })}>
-              <span className="text-xl font-bold text-sb-muted select-none">PDF</span>
+
+              <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center flex-shrink-0">
+                <span className="text-xs font-bold text-red-500">PDF</span>
+              </div>
+
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-sb-text truncate">{item.nome}</p>
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -215,11 +265,12 @@ export default function Regolamenti() {
                 </div>
                 {item.note && <p className="text-xs text-sb-muted mt-0.5 truncate">{item.note}</p>}
               </div>
+
               <div className="flex gap-1">
                 <a href={item.url} target="_blank" rel="noreferrer"
                   onClick={e => e.stopPropagation()}
                   className="px-2 py-1.5 rounded-lg text-xs text-sb-muted hover:text-sb-blue hover:bg-sb-bg">
-                  Apri
+                  Apri ↗
                 </a>
                 <button onClick={e => { e.stopPropagation(); handleDelete(item) }}
                   disabled={deleting === item.id}
@@ -231,7 +282,7 @@ export default function Regolamenti() {
           ))}
         </div>
 
-        {/* Viewer PDF */}
+        {/* Viewer PDF inline */}
         {viewer && (
           <div className="flex-1 bg-sb-panel rounded-2xl border border-sb-sep shadow-sm overflow-hidden flex flex-col" style={{ minHeight: '500px' }}>
             <div className="flex items-center justify-between px-4 py-2 border-b border-sb-sep">
