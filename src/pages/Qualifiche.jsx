@@ -580,11 +580,24 @@ export default function Qualifiche() {
   const [saving, setSaving]   = useState(false)
   const [loading, setLoading] = useState(false)
 
-  // Load regolamenti on mount
+  // Load regolamenti + last saved session on mount
   useEffect(() => {
     cloudLoadRegolamenti()
-      .then(regs => setRegolamenti(regs.filter(r => r.categoria === 'Nazionali FIN')))
+      .then(regs => setRegolamenti(regs))
       .catch(() => {})
+
+    cloudLoad().then(res => {
+      if (!res) return
+      const p = res.payload
+      setCompetizione(p.competizione || '')
+      setXlsxRows(p.xlsxRows || [])
+      setEsteri(p.esteri || [])
+      setRinunce(new Set(p.rinunce || []))
+      setFilterVasca(p.filterVasca || 'Tutte')
+      setFilterSesso(p.filterSesso || 'Tutti')
+      setSoloUnNome(p.soloUnNome ?? true)
+      if (p.xlsxRows?.length) setFileName('(sessione salvata)')
+    }).catch(() => {})
   }, [])
 
   // Derived: all rows merged (xlsx + esteri), then filtered
