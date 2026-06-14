@@ -114,11 +114,15 @@ function timeToSecs(val) {
   return parseFloat(t) || Infinity
 }
 
+function normKey(s) {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '')
+}
+
 function getVal(row, ...keys) {
   for (const k of keys) {
     if (row[k] !== undefined && row[k] !== '') return row[k]
-    const norm = k.toLowerCase().replace(/[^a-z0-9]/g, '')
-    const found = Object.keys(row).find(rk => rk.toLowerCase().replace(/[^a-z0-9]/g, '') === norm)
+    const nk = normKey(k)
+    const found = Object.keys(row).find(rk => normKey(rk) === nk)
     if (found !== undefined && row[found] !== undefined && row[found] !== '') return row[found]
   }
   return ''
