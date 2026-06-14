@@ -95,7 +95,7 @@ VIS_GARE = {
     "50 Dorso",  "100 Dorso",  "200 Dorso",
     "50 Rana",   "100 Rana",   "200 Rana",
     "50 Farfalla", "100 Farfalla", "200 Farfalla",
-    "200 Misti", "400 Misti",
+    "100 Misti", "200 Misti", "400 Misti",
 }
 
 # -- Login --------------------------------------------------------------------
@@ -179,7 +179,7 @@ def fetch_task(task, cookies, headers, stagione):
         f"{AQT_BASE}/records.php"
         f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
         f"&tipoG=2&Vasca={vasca_id}&Sesso={sesso_id}"
-        f"&TipoTempi=2&SoloSoc=0&comi=1&page=1#box3"
+        f"&TipoTempi=2&SoloSoc=0&comi=1&page=1"
     )
     try:
         r = requests.get(url, cookies=cookies, headers=headers, timeout=12)
@@ -286,6 +286,66 @@ def cerca():
         mimetype="application/x-ndjson",
         headers={"X-Accel-Buffering": "no"},
     )
+
+# -- Endpoint: debug singola combo -------------------------------------------
+
+@app.route("/api/aqt/debug", methods=["POST", "OPTIONS"])
+def debug_combo():
+    if request.method == "OPTIONS":
+        return "", 204
+    """Testa una singola combinazione e restituisce quante righe trova per tipoG=0 e tipoG=2."""
+    data     = request.get_json(force=True)
+    utente   = data.get("utente", "").strip()
+    password = data.get("password", "").strip()
+    cat      = data.get("cat", "CADETTI")
+    gara     = data.get("gara", "100 Rana")
+    sesso    = data.get("sesso", "Maschi")
+    vasca_id = data.get("vasca", "2")
+    stagione = data.get("stagione", "2025-2026")
+
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": AQT_BASE + "/",
+    }
+    session.headers.update(headers)
+    session.get(AQT_BASE, timeout=15)
+    session.post(AQT_BASE + "/login.php",
+                 data={"uname": utente, "passw": password},
+                 headers={"Content-Type": "application/x-www-form-urlencoded"},
+                 timeout=15, allow_redirects=True)
+
+    stag_id  = AQT_STAGIONI.get(stagione, "20")
+    cat_id   = AQT_CATEGORIE.get(cat, "9")
+    gara_id  = AQT_GARE.get(gara, "35")
+    sesso_id = "1" if sesso == "Maschi" else "2"
+    cookies  = dict(session.cookies)
+    req_h    = dict(session.headers)
+
+    results = {}
+    for tipo in [0, 2]:
+        url = (f"{AQT_BASE}/records.php"
+               f"?Stagione={stag_id}&Categoria={cat_id}&Gara={gara_id}"
+               f"&tipoG={tipo}&Vasca={vasca_id}&Sesso={sesso_id}"
+               f"&TipoTempi=2&SoloSoc=0&comi=1&page=1")
+        try:
+            r = requests.get(url, cookies=cookies, headers=req_h, timeout=12)
+            rows = parse_table(r.text, gara, cat, sesso, stagione, None)
+            # Conta anche quante tabelle ci sono nella pagina
+            from bs4 import BeautifulSoup as BS
+            soup = BS(r.text, "html.parser")
+            tbls = soup.find_all("table")
+            results[f"tipoG_{tipo}"] = {
+                "rows": len(rows),
+                "sample": rows[:2] if rows else [],
+                "tables_in_page": len(tbls),
+                "table_classes": list({t.get("class", ["none"])[0] for t in tbls}),
+                "url": url,
+            }
+        except Exception as e:
+            results[f"tipoG_{tipo}"] = {"error": str(e)}
+
+    return jsonify(results)
 
 # -- Endpoint: stagioni -------------------------------------------------------
 
