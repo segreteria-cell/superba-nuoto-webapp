@@ -75,7 +75,7 @@ const VIS_GARE = [
   "50 Dorso","100 Dorso","200 Dorso",
   "50 Rana","100 Rana","200 Rana",
   "50 Farfalla","100 Farfalla","200 Farfalla",
-  "200 Misti","400 Misti",
+  "100 Misti","200 Misti","400 Misti",
 ]
 
 const DISTANZE = ["50","100","200","400","800","1500"]
