@@ -5,6 +5,7 @@ import XLSXStyle from 'xlsx-js-style'
 import { ref as rtdbRef, set as rtdbSet, get as rtdbGet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
 import { ELENCO_ATLETI } from '../lib/elencoAtleti'
+import { extractPdfText, parseProgramma, parseGraduatoriaLimiti } from '../lib/parseProgramma'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -61,6 +62,12 @@ async function cloudLoadRegolamenti() {
   const val = snap.val()
   const dec = LZString.decompressFromBase64(val.data) || LZString.decompress(val.data)
   return JSON.parse(dec) || []
+}
+
+async function cloudLoadPdf(id) {
+  const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/files/' + id))
+  if (!snap.exists()) return null
+  return LZString.decompressFromBase64(snap.val()) // base64 del PDF
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -224,35 +231,76 @@ function exportExcel(rows, competizione) {
   XLSXStyle.writeFile(wb, `Qualifiche_${(competizione || 'export').replace(/\s+/g, '_')}.xlsx`)
 }
 
-function exportGrigliaGare(rows, competizione) {
-  // Group by gara (specialita + distanza + vasca + sesso + cat)
-  const garaMap = {}
+function exportGrigliaGare(rows, competizione, programma) {
+  // Build lookup: spec|dist|sesso|cat → atleti
+  const lookup = {}
   for (const r of rows) {
-    const key = `${r.specialita}|${r.distanza}|${r.vasca}|${r.sesso}|${normCat(r.categoria)}`
-    if (!garaMap[key]) garaMap[key] = { spec: r.specialita, dist: r.distanza, vasca: r.vasca,
-      sesso: r.sesso, cat: normCat(r.categoria), atleti: [] }
-    garaMap[key].atleti.push({ atleta: r.atleta, tempo: r.tempo, fina: r.fina, sezione: r.sezione })
+    const catN = normCat(r.categoria)
+    const key  = `${r.specialita}|${r.distanza}|${r.sesso}|${catN}`
+    if (!lookup[key]) lookup[key] = []
+    lookup[key].push(r)
   }
-  // Sort each gara's athletes by fina desc
-  for (const g of Object.values(garaMap)) {
-    g.atleti.sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
+  for (const v of Object.values(lookup))
+    v.sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
+
+  const wb  = XLSXStyle.utils.book_new()
+  const hStyle = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0077C8'}}, alignment:{horizontal:'center'} }
+  const dayStyle = { font:{bold:true,sz:13}, fill:{fgColor:{rgb:'071422'}}, font:{bold:true,color:{rgb:'FFFFFF'}} }
+
+  if (programma && programma.length > 0) {
+    // Organizza per giornata
+    for (const giorno of programma) {
+      const sheetName = `G${giorno.giornata} - ${giorno.data}`.slice(0, 31)
+      const aoa = []
+      aoa.push([`${giorno.giornata}ª Giornata – ${giorno.data}`, '', '', '', ''])
+      for (const sess of giorno.sessioni) {
+        aoa.push([sess.nome.toUpperCase(), '', '', '', ''])
+        for (const gara of sess.gare) {
+          const sessoLabel = gara.sesso === 'Female' ? 'Femminile' : gara.sesso === 'Male' ? 'Maschile' : 'M+F'
+          const catLabel   = gara.cat || gara.catRaw || ''
+          const garaLabel  = `${gara.dist}m ${gara.spec} – ${sessoLabel} ${catLabel} (${gara.tipo})`
+          aoa.push([garaLabel, '', '', '', ''])
+          aoa.push(['Pos.', 'Atleta', 'Sez.', 'Cat.', 'Tempo', 'FINA', 'Tipo'])
+          const atl = gara.sesso
+            ? (lookup[`${gara.spec}|${gara.dist}|${gara.sesso}|${gara.cat || normCat(gara.catRaw)}`] || [])
+            : []
+          if (atl.length === 0) {
+            // Cerca senza categoria (gare J/C/S combinate)
+            const combined = Object.entries(lookup)
+              .filter(([k]) => k.startsWith(`${gara.spec}|${gara.dist}|${gara.sesso || ''}`))
+              .flatMap(([, v]) => v)
+            combined.sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
+            combined.forEach((a, i) => aoa.push([i+1, a.atleta, a.sezione, normCat(a.categoria), a.tempo, a.fina, a._source === 'xlsx' ? 'TL' : a._source]))
+          } else {
+            atl.forEach((a, i) => aoa.push([i+1, a.atleta, a.sezione, normCat(a.categoria), a.tempo, a.fina, a._source === 'xlsx' ? 'TL' : a._source]))
+          }
+          aoa.push(['', '', '', '', '', ''])
+        }
+      }
+      const ws = XLSXStyle.utils.aoa_to_sheet(aoa)
+      XLSXStyle.utils.book_append_sheet(wb, ws, sheetName)
+    }
+  } else {
+    // Fallback: senza programma, ordine per specialità
+    const garaMap = {}
+    for (const r of rows) {
+      const key = `${r.specialita}|${r.distanza}|${r.sesso}|${normCat(r.categoria)}`
+      if (!garaMap[key]) garaMap[key] = { spec:r.specialita, dist:r.distanza, sesso:r.sesso, cat:normCat(r.categoria), atleti:[] }
+      garaMap[key].atleti.push(r)
+    }
+    const aoa = []
+    for (const g of Object.values(garaMap)) {
+      const label = `${g.dist}m ${g.spec} – ${g.sesso === 'Male' ? 'M' : 'F'} ${g.cat}`
+      aoa.push([label,'','','','',''])
+      aoa.push(['Pos.','Atleta','Sez.','Cat.','Tempo','FINA','Tipo'])
+      g.atleti.sort((a,b) => b.fina-a.fina).forEach((a,i) =>
+        aoa.push([i+1,a.atleta,a.sezione,normCat(a.categoria),a.tempo,a.fina,a._source==='xlsx'?'TL':a._source]))
+      aoa.push(['','','','','',''])
+    }
+    const ws = XLSXStyle.utils.aoa_to_sheet(aoa)
+    XLSXStyle.utils.book_append_sheet(wb, ws, 'Griglia Gare')
   }
-  const sortedGare = Object.values(garaMap).sort((a, b) => {
-    const specOrd = SPEC_ORDER.indexOf(SPEC_ABBR[a.spec] || a.spec) - SPEC_ORDER.indexOf(SPEC_ABBR[b.spec] || b.spec)
-    if (specOrd !== 0) return specOrd
-    return a.dist - b.dist
-  })
-  const aoa = []
-  for (const g of sortedGare) {
-    const label = `${g.dist}m ${g.spec} – ${g.sesso === 'Male' ? 'Maschile' : 'Femminile'} ${g.cat} (${g.vasca})`
-    aoa.push([label, '', '', ''])
-    aoa.push(['Pos.', 'Atleta', 'Sezione', 'Tempo', 'FINA'])
-    g.atleti.forEach((a, i) => aoa.push([i + 1, a.atleta, a.sezione, a.tempo, a.fina]))
-    aoa.push(['', '', '', ''])
-  }
-  const ws = XLSXStyle.utils.aoa_to_sheet(aoa)
-  const wb = XLSXStyle.utils.book_new()
-  XLSXStyle.utils.book_append_sheet(wb, ws, 'Griglia Gare')
+
   XLSXStyle.writeFile(wb, `GrigliaGare_${(competizione || 'export').replace(/\s+/g, '_')}.xlsx`)
 }
 
@@ -565,6 +613,12 @@ export default function Qualifiche() {
   const [regolamenti, setRegolamenti]    = useState([])
   const [fileName, setFileName]          = useState('')
 
+  // programma dal PDF del regolamento
+  const [programma, setProgramma]               = useState([])   // [{giornata,data,sessioni}]
+  const [graduatoriaLimiti, setGraduatoriaLimiti] = useState({}) // {dist|spec|sesso: max}
+  const [pdfLoading, setPdfLoading]             = useState(false)
+  const [inclusiGraduatoria, setInclusiGraduatoria] = useState(false)
+
   // filters
   const [filterVasca, setFilterVasca]     = useState('Tutte')
   const [filterSesso, setFilterSesso]     = useState('Tutti')
@@ -600,6 +654,25 @@ export default function Qualifiche() {
       if (p.xlsxRows?.length) setFileName('(sessione salvata)')
     }).catch(() => {})
   }, [])
+
+  // Carica e parsa il PDF del regolamento quando cambia la competizione
+  useEffect(() => {
+    if (!competizione || regolamenti.length === 0) return
+    const reg = regolamenti.find(r => r.nome === competizione)
+    if (!reg) return
+    setPdfLoading(true)
+    setProgramma([])
+    setGraduatoriaLimiti({})
+    cloudLoadPdf(reg.id).then(async base64 => {
+      if (!base64) return
+      try {
+        const text = await extractPdfText(base64)
+        setProgramma(parseProgramma(text))
+        setGraduatoriaLimiti(parseGraduatoriaLimiti(text))
+      } catch (e) { console.warn('Errore parsing PDF:', e) }
+    }).catch(e => console.warn('Errore caricamento PDF:', e))
+      .finally(() => setPdfLoading(false))
+  }, [competizione, regolamenti])
 
   // Derived: all rows merged (xlsx + esteri), then filtered
   const allRows = useMemo(() => [...xlsxRows, ...esteri], [xlsxRows, esteri])
@@ -670,13 +743,18 @@ export default function Qualifiche() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-bold text-sb-text flex-1">Qualifiche</h1>
         {/* Competizione */}
-        <select
-          className="bg-sb-bg border border-sb-sep rounded px-3 py-1.5 text-sm text-sb-text focus:outline-none focus:border-sb-blue"
-          value={competizione} onChange={e => setCompetizione(e.target.value)}
-        >
-          <option value="">— Seleziona competizione —</option>
-          {regolamenti.map(r => <option key={r.id} value={r.nome}>{r.nome}</option>)}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            className="bg-sb-bg border border-sb-sep rounded px-3 py-1.5 text-sm text-sb-text focus:outline-none focus:border-sb-blue"
+            value={competizione} onChange={e => setCompetizione(e.target.value)}
+          >
+            <option value="">— Seleziona competizione —</option>
+            {regolamenti.map(r => <option key={r.id} value={r.nome}>{r.nome}</option>)}
+          </select>
+          {pdfLoading && <span className="text-xs text-sb-muted animate-pulse">⏳ Caricamento PDF…</span>}
+          {!pdfLoading && programma.length > 0 && <span className="text-xs text-sb-green">✓ Programma ({programma.length} giorni)</span>}
+          {!pdfLoading && competizione && programma.length === 0 && <span className="text-xs text-sb-muted">⚠ Nessun programma nel PDF</span>}
+        </div>
       </div>
 
       {/* ── IMPORT AREA ── */}
@@ -722,6 +800,13 @@ export default function Qualifiche() {
           ))}
         </div>
         <div className="flex gap-2 ml-auto">
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-sb-text">
+            <input type="checkbox" checked={inclusiGraduatoria} onChange={e => setInclusiGraduatoria(e.target.checked)} className="accent-sb-green w-4 h-4" />
+            <span className="text-sb-green font-semibold">Includi Graduatoria</span>
+            {Object.keys(graduatoriaLimiti).length > 0 && (
+              <span className="text-xs text-sb-muted">(limiti caricati)</span>
+            )}
+          </label>
           <button onClick={() => setShowAggEstero(true)} className={btnSecond}>+ Aggiungi Estero</button>
           {esteri.length > 0 && (
             <button onClick={() => setShowGestEsteri(true)} className={btnSecond}>
@@ -848,8 +933,8 @@ export default function Qualifiche() {
         <button onClick={() => exportExcel(filtered, competizione)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
           📊 Esporta Excel
         </button>
-        <button onClick={() => exportGrigliaGare(filtered, competizione)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
-          📋 Genera Griglia Gare
+        <button onClick={() => exportGrigliaGare(filtered, competizione, programma)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
+          📋 Genera Griglia Gare {programma.length > 0 && <span className="text-xs opacity-70">({programma.length}gg)</span>}
         </button>
         <button onClick={() => setShowAnalisi(true)} disabled={filtered.length === 0} className={btnSecond + ' disabled:opacity-40'}>
           📈 Analisi Sezione
