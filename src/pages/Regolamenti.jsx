@@ -26,20 +26,21 @@ function readFileAsBase64(file) {
   })
 }
 
-// RTDB: salva metadati lista
+// RTDB: salva metadati lista — compressToBase64 = ASCII puro, sicuro per Firebase
 async function cloudSaveMeta(list) {
   await rtdbSet(rtdbRef(rtdb, 'regolamenti/meta'), {
     timestamp: new Date().toISOString(),
-    data: LZString.compress(JSON.stringify(list)),
+    data: LZString.compressToBase64(JSON.stringify(list)),
   })
 }
 
-// RTDB: carica metadati lista
+// RTDB: carica metadati lista — fallback su entrambi i metodi di compressione
 async function cloudLoadMeta() {
   const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/meta'))
   if (!snap.exists()) return []
   const val = snap.val()
-  return JSON.parse(LZString.decompress(val.data))
+  const dec = LZString.decompressFromBase64(val.data) || LZString.decompress(val.data)
+  return JSON.parse(dec) || []
 }
 
 // RTDB: salva PDF — compressToBase64 produce ASCII puro, sicuro per Firebase

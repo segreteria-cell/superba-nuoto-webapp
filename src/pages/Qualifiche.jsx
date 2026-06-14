@@ -59,7 +59,8 @@ async function cloudLoadRegolamenti() {
   const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/meta'))
   if (!snap.exists()) return []
   const val = snap.val()
-  return JSON.parse(LZString.decompress(val.data)) || []
+  const dec = LZString.decompressFromBase64(val.data) || LZString.decompress(val.data)
+  return JSON.parse(dec) || []
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
