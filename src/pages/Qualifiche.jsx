@@ -242,76 +242,201 @@ function exportExcel(rows, competizione) {
   XLSXStyle.writeFile(wb, `Qualifiche_${(competizione || 'export').replace(/\s+/g, '_')}.xlsx`)
 }
 
-function exportGrigliaGare(rows, competizione, programma) {
-  // Build lookup: spec|dist|sesso|cat → atleti
-  const lookup = {}
-  for (const r of rows) {
-    const catN = normCat(r.categoria)
-    const key  = `${r.specialita}|${r.distanza}|${r.sesso}|${catN}`
-    if (!lookup[key]) lookup[key] = []
-    lookup[key].push(r)
+function wsCell(ws, r, c, val, s) {
+  const ref = XLSXStyle.utils.encode_cell({ r, c })
+  ws[ref] = { v: val == null ? '' : val, t: typeof val === 'number' ? 'n' : 's', s: s || {} }
+}
+
+function gEventCode(dist, spec) {
+  const abbr = SPEC_ABBR[spec] || (spec || '').slice(0, 2)
+  if (typeof dist === 'string' && dist.includes('x')) {
+    const parts = dist.split('x')
+    return `${parts[0]}x${parts[1]}${abbr}`
   }
-  for (const v of Object.values(lookup))
-    v.sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
+  return `${dist}${abbr}`
+}
 
-  const wb  = XLSXStyle.utils.book_new()
-  const hStyle = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0077C8'}}, alignment:{horizontal:'center'} }
-  const dayStyle = { font:{bold:true,sz:13}, fill:{fgColor:{rgb:'071422'}}, font:{bold:true,color:{rgb:'FFFFFF'}} }
+function gCatAbbr(cat, catRaw) {
+  const raw = (catRaw || '').toUpperCase()
+  if (raw.includes('J/C/S') || raw.includes('JCS')) return 'J/C/S'
+  if (raw.includes('J/C')   || raw.includes('JC'))  return 'J/C'
+  if (cat === 'RAGAZZI')  return 'R'
+  if (cat === 'JUNIORES') return 'J'
+  if (cat === 'CADETTI')  return 'C'
+  if (cat === 'SENIORES') return 'S'
+  return null
+}
 
-  if (programma && programma.length > 0) {
-    // Organizza per giornata
-    for (const giorno of programma) {
-      const sheetName = `G${giorno.giornata} - ${giorno.data}`.slice(0, 31)
-      const aoa = []
-      aoa.push([`${giorno.giornata}ª Giornata – ${giorno.data}`, '', '', '', ''])
-      for (const sess of giorno.sessioni) {
-        aoa.push([sess.nome.toUpperCase(), '', '', '', ''])
-        for (const gara of sess.gare) {
-          const sessoLabel = gara.sesso === 'Female' ? 'Femminile' : gara.sesso === 'Male' ? 'Maschile' : 'M+F'
-          const catLabel   = gara.cat || gara.catRaw || ''
-          const garaLabel  = `${gara.dist}m ${gara.spec} – ${sessoLabel} ${catLabel} (${gara.tipo})`
-          aoa.push([garaLabel, '', '', '', ''])
-          aoa.push(['Pos.', 'Atleta', 'Sez.', 'Cat.', 'Tempo', 'FINA', 'Tipo'])
-          const atl = gara.sesso
-            ? (lookup[`${gara.spec}|${gara.dist}|${gara.sesso}|${gara.cat || normCat(gara.catRaw)}`] || [])
-            : []
-          if (atl.length === 0) {
-            // Cerca senza categoria (gare J/C/S combinate)
-            const combined = Object.entries(lookup)
-              .filter(([k]) => k.startsWith(`${gara.spec}|${gara.dist}|${gara.sesso || ''}`))
-              .flatMap(([, v]) => v)
-            combined.sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
-            combined.forEach((a, i) => aoa.push([i+1, a.atleta, a.sezione, normCat(a.categoria), a.tempo, a.fina, a._source === 'xlsx' ? 'TL' : a._source]))
-          } else {
-            atl.forEach((a, i) => aoa.push([i+1, a.atleta, a.sezione, normCat(a.categoria), a.tempo, a.fina, a._source === 'xlsx' ? 'TL' : a._source]))
+function gFindAthletes(sessoRows, sesso, spec, dist, cat) {
+  const isStaffetta = typeof dist === 'string' && dist.includes('x')
+  const legDist = isStaffetta ? parseInt(dist.split('x')[1]) : dist
+  return sessoRows.filter(r => {
+    if (r.specialita !== spec) return false
+    if (r.distanza !== legDist) return false
+    if (cat && normCat(r.categoria) !== cat) return false
+    return true
+  }).sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
+}
+
+function buildRiepilogo(rows) {
+  const F = rows.filter(r => r.sesso === 'Female')
+  const M = rows.filter(r => r.sesso === 'Male')
+  const atletiF = new Set(F.map(r => r.atleta)).size
+  const atletiM = new Set(M.map(r => r.atleta)).size
+  const ws = {}; const merges = []; let row = 0
+
+  const sTit  = { font: { bold: true, sz: 13, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1A6FBA' } }, alignment: { horizontal: 'center' } }
+  const sHdr  = { font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '37474F' } } }
+  const sBold = { font: { bold: true } }
+
+  wsCell(ws, row, 0, 'RIEPILOGO QUALIFICATI', sTit); wsCell(ws, row, 1, null, sTit); wsCell(ws, row, 2, null, sTit)
+  merges.push({ s: {r:row,c:0}, e: {r:row,c:2} }); row++
+  ;['SEZIONE','PRESENZE GARA','NUMERO ATLETI'].forEach((h, c) => wsCell(ws, row, c, h, sHdr)); row++
+  wsCell(ws, row, 0, 'Femminile'); wsCell(ws, row, 1, F.length, {}); wsCell(ws, row, 2, atletiF, {}); row++
+  wsCell(ws, row, 0, 'Maschile');  wsCell(ws, row, 1, M.length, {}); wsCell(ws, row, 2, atletiM, {}); row++
+  wsCell(ws, row, 0, 'TOTALE COMPLESSIVO', sBold); wsCell(ws, row, 1, rows.length, sBold); wsCell(ws, row, 2, atletiF + atletiM, sBold); row++
+  row++
+
+  wsCell(ws, row, 0, 'DETTAGLIO PER GARA', sBold); wsCell(ws, row, 1, null); wsCell(ws, row, 2, null)
+  merges.push({ s: {r:row,c:0}, e: {r:row,c:2} }); row++
+
+  for (const [label, sessoRows] of [['FEMMINILE', F], ['MASCHILE', M]]) {
+    wsCell(ws, row, 0, `— ${label} —`, sHdr); wsCell(ws, row, 1, null, sHdr); wsCell(ws, row, 2, null, sHdr)
+    merges.push({ s: {r:row,c:0}, e: {r:row,c:2} }); row++
+    const ev = {}
+    for (const r of sessoRows) { const c = gEventCode(r.distanza, r.specialita); ev[c] = (ev[c] || 0) + 1 }
+    for (const [code, cnt] of Object.entries(ev).sort()) {
+      wsCell(ws, row, 0, `  ${code}`); wsCell(ws, row, 1, cnt, {}); wsCell(ws, row, 2, null, {}); row++
+    }
+  }
+
+  ws['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 14 }]
+  ws['!merges'] = merges
+  ws['!ref'] = XLSXStyle.utils.encode_range({ s: {r:0,c:0}, e: {r:row-1,c:2} })
+  return ws
+}
+
+function buildGrigliaSheet(rows, sesso, programma) {
+  const ws = {}; const merges = []
+  const sessoLabel = sesso === 'Female' ? 'FEMMINILE' : 'MASCHILE'
+  const sessoRows  = rows.filter(r => r.sesso === sesso)
+  const giorni = programma.filter(g => g.sessioni.some(s => s.gare.some(ga => !ga.sesso || ga.sesso === sesso)))
+  const nCols = giorni.length
+
+  if (nCols === 0) {
+    ws['A1'] = { v: 'Nessuna gara nel programma', t: 's', s: {} }; ws['!ref'] = 'A1'; return ws
+  }
+
+  ws['!cols'] = giorni.map(() => ({ wch: 26 }))
+
+  const STL = {
+    title: { font: { bold: true, sz: 13, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1A6FBA' } }, alignment: { horizontal: 'center' } },
+    day:   { font: { bold: true, sz: 11 }, fill: { fgColor: { rgb: 'E3F0FA' } }, alignment: { horizontal: 'center' } },
+    sess:  { font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '37474F' } } },
+    event: { font: { bold: true, sz: 10 } },
+    atl:   { font: { sz: 10 } },
+    noatl: { font: { sz: 9, italic: true, color: { rgb: '999999' } } },
+    fraz:  { font: { sz: 10, color: { rgb: '555555' } } },
+  }
+
+  for (let c = 0; c < nCols; c++) wsCell(ws, 0, c, c === 0 ? `GRIGLIA GARE  —  ${sessoLabel}` : null, STL.title)
+  if (nCols > 1) merges.push({ s: {r:0,c:0}, e: {r:0,c:nCols-1} })
+  giorni.forEach((g, ci) => wsCell(ws, 1, ci, `GIORNO ${g.giornata}`, STL.day))
+
+  const plans = giorni.map(g => {
+    const plan = []
+    for (const sess of g.sessioni) {
+      const gare = sess.gare.filter(ga => !ga.sesso || ga.sesso === sesso)
+      if (!gare.length) continue
+      plan.push({ text: `▸  ${sess.nome.toUpperCase()}`, style: STL.sess })
+      for (const gara of gare) {
+        const code  = gEventCode(gara.dist, gara.spec)
+        const abbr  = gCatAbbr(gara.cat, gara.catRaw)
+        const label = abbr ? `  ${code}  [${abbr}]` : `  ${code}`
+        plan.push({ text: label, style: STL.event })
+        const isStaff  = typeof gara.dist === 'string' && gara.dist.includes('x')
+        const athletes = gFindAthletes(sessoRows, sesso, gara.spec, gara.dist, gara.cat || null)
+        if (isStaff) {
+          const top4 = athletes.slice(0, 4)
+          for (let i = 0; i < 4; i++) {
+            plan.push({ text: `  FRAZ ${i + 1}`, style: STL.fraz })
+            if (top4[i]) plan.push({ text: `  ${top4[i].atleta}`, style: STL.atl })
           }
-          aoa.push(['', '', '', '', '', ''])
+        } else if (!athletes.length) {
+          plan.push({ text: 'nessun qualificato', style: STL.noatl })
+        } else {
+          for (const a of athletes) plan.push({ text: `  ${a.atleta}`, style: STL.atl })
         }
       }
-      const ws = XLSXStyle.utils.aoa_to_sheet(aoa)
-      XLSXStyle.utils.book_append_sheet(wb, ws, sheetName)
+      plan.push({ text: '', style: {} })
     }
-  } else {
-    // Fallback: senza programma, ordine per specialità
-    const garaMap = {}
-    for (const r of rows) {
-      const key = `${r.specialita}|${r.distanza}|${r.sesso}|${normCat(r.categoria)}`
-      if (!garaMap[key]) garaMap[key] = { spec:r.specialita, dist:r.distanza, sesso:r.sesso, cat:normCat(r.categoria), atleti:[] }
-      garaMap[key].atleti.push(r)
-    }
-    const aoa = []
-    for (const g of Object.values(garaMap)) {
-      const label = `${g.dist}m ${g.spec} – ${g.sesso === 'Male' ? 'M' : 'F'} ${g.cat}`
-      aoa.push([label,'','','','',''])
-      aoa.push(['Pos.','Atleta','Sez.','Cat.','Tempo','FINA','Tipo'])
-      g.atleti.sort((a,b) => b.fina-a.fina).forEach((a,i) =>
-        aoa.push([i+1,a.atleta,a.sezione,normCat(a.categoria),a.tempo,a.fina,a._source==='xlsx'?'TL':a._source]))
-      aoa.push(['','','','','',''])
-    }
-    const ws = XLSXStyle.utils.aoa_to_sheet(aoa)
-    XLSXStyle.utils.book_append_sheet(wb, ws, 'Griglia Gare')
+    return plan
+  })
+
+  const maxRows = Math.max(...plans.map(p => p.length))
+  plans.forEach((plan, ci) => plan.forEach((item, ri) => wsCell(ws, 2 + ri, ci, item.text, item.style)))
+
+  ws['!merges'] = merges
+  ws['!ref'] = XLSXStyle.utils.encode_range({ s: {r:0,c:0}, e: {r:2+maxRows,c:nCols-1} })
+  return ws
+}
+
+function buildElencoSheet(rows, sesso) {
+  const label = sesso === 'Female' ? 'FEMMINE' : 'MASCHI'
+  const sessoRows = rows.filter(r => r.sesso === sesso)
+  const byAtleta = {}
+  for (const r of sessoRows) {
+    if (!byAtleta[r.atleta]) byAtleta[r.atleta] = []
+    byAtleta[r.atleta].push(r)
   }
 
+  const ws = {}; const merges = []; let row = 0; const NC = 6
+
+  const STL = {
+    tit:  { font: { bold: true, sz: 12, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1A6FBA' } }, alignment: { horizontal: 'center' } },
+    hdr:  { font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '37474F' } } },
+    name: { font: { bold: true, sz: 10 } },
+    dat:  { font: { sz: 10 } },
+    tl:   { font: { sz: 10, color: { rgb: '1A6FBA' } } },
+    grad: { font: { sz: 10, color: { rgb: '2E7D32' } } },
+  }
+
+  for (let c = 0; c < NC; c++) wsCell(ws, row, c, c === 0 ? `ELENCO ${label} — Atleti qualificati` : null, STL.tit)
+  merges.push({ s: {r:row,c:0}, e: {r:row,c:NC-1} }); row++
+  ;['Atleta','Categoria','Gara','Tempo','FINA','Tipo qualifica'].forEach((h, c) => wsCell(ws, row, c, h, STL.hdr)); row++
+
+  for (const [atleta, gare] of Object.entries(byAtleta).sort(([a],[b]) => a.localeCompare(b, 'it'))) {
+    const sorted = [...gare].sort((a, b) => gEventCode(a.distanza, a.specialita).localeCompare(gEventCode(b.distanza, b.specialita)))
+    for (let i = 0; i < sorted.length; i++) {
+      const g = sorted[i]
+      const code = gEventCode(g.distanza, g.specialita)
+      const tipo = (g._source === 'xlsx' || g._source === 'TL') ? 'Tempo Limite' : 'Graduatoria'
+      wsCell(ws, row, 0, i === 0 ? atleta : '', i === 0 ? STL.name : STL.dat)
+      wsCell(ws, row, 1, i === 0 ? normCat(g.categoria) : '', STL.dat)
+      wsCell(ws, row, 2, code, STL.dat)
+      wsCell(ws, row, 3, g.tempo, STL.dat)
+      wsCell(ws, row, 4, g.fina || '', STL.dat)
+      wsCell(ws, row, 5, tipo, tipo === 'Tempo Limite' ? STL.tl : STL.grad)
+      row++
+    }
+    row++
+  }
+
+  ws['!cols'] = [{ wch: 26 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 8 }, { wch: 15 }]
+  ws['!merges'] = merges
+  ws['!ref'] = XLSXStyle.utils.encode_range({ s: {r:0,c:0}, e: {r:row-1,c:NC-1} })
+  return ws
+}
+
+function exportGrigliaGare(rows, competizione, programma) {
+  const wb = XLSXStyle.utils.book_new()
+  XLSXStyle.utils.book_append_sheet(wb, buildRiepilogo(rows), 'Riepilogo')
+  if (programma && programma.length > 0) {
+    XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Female', programma), 'Femminile')
+    XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Male',   programma), 'Maschile')
+  }
+  XLSXStyle.utils.book_append_sheet(wb, buildElencoSheet(rows, 'Female'), 'Elenco Femmine')
+  XLSXStyle.utils.book_append_sheet(wb, buildElencoSheet(rows, 'Male'),   'Elenco Maschi')
   XLSXStyle.writeFile(wb, `GrigliaGare_${(competizione || 'export').replace(/\s+/g, '_')}.xlsx`)
 }
 
