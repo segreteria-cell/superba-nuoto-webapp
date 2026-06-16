@@ -210,7 +210,7 @@ function applyFilters(rows, { stagione, vasca, sesso, categoria, specialita, dis
 function deduplicateBest(rows) {
   const best = new Map()
   for (const r of rows) {
-    const key = `${r.atleta}|${r.specialita}|${r.distanza}|${r.vasca}`
+    const key = `${r.atleta}|${r.sesso}`
     const cur = best.get(key)
     if (!cur || r.fina > cur.fina) best.set(key, r)
   }
