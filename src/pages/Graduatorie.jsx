@@ -540,6 +540,7 @@ export default function Graduatorie() {
   const [graduatoria, setGraduatoria] = useState([])
   const [sortCol,     setSortCol]     = useState('posGrad')
   const [sortDir,     setSortDir]     = useState(1)
+  const hasGeneratedRef = useRef(false)
 
   const handleCloudLoad = useCallback(() => {
     setCloudLoading(true); setError('')
@@ -595,6 +596,7 @@ export default function Graduatorie() {
   }, [allRows])
 
   const handleGenera = useCallback(() => {
+    hasGeneratedRef.current = true
     const result = buildGraduatoria(
       allRows,
       { stagione, vasca, sesso, categoria, specialita, distanza },
@@ -603,6 +605,14 @@ export default function Graduatorie() {
     setGraduatoria(result)
     setSortCol('posGrad'); setSortDir(1)
   }, [allRows, stagione, vasca, sesso, categoria, specialita, distanza, topN, bestPerAtleta])
+
+  useEffect(() => {
+    if (!hasGeneratedRef.current) return
+    setGraduatoria(
+      buildGraduatoria(allRows, { stagione, vasca, sesso, categoria, specialita, distanza }, topN, bestPerAtleta)
+    )
+    setSortCol('posGrad'); setSortDir(1)
+  }, [bestPerAtleta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleClear = () => {
     try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('grad_lastupdate') } catch {}
