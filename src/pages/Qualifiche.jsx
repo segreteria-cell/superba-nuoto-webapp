@@ -41,16 +41,27 @@ const VASCHE          = ['25 metri','50 metri']
 // FIREBASE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const LAST_COMP_KEY = 'qualifiche_last_comp'
+
+function compToKey(nome) {
+  if (!nome) return ''
+  return nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+}
+
 async function cloudSave(payload) {
+  const key = compToKey(payload.competizione)
+  if (!key) throw new Error('Seleziona una competizione prima di salvare')
   const compressed = LZString.compressToBase64(JSON.stringify(payload))
-  await rtdbSet(rtdbRef(rtdb, 'qualifiche/current'), {
+  await rtdbSet(rtdbRef(rtdb, `qualifiche/sessions/${key}`), {
     timestamp: new Date().toISOString(),
     data: compressed,
   })
 }
 
-async function cloudLoad() {
-  const snap = await rtdbGet(rtdbRef(rtdb, 'qualifiche/current'))
+async function cloudLoad(competizione) {
+  const key = compToKey(competizione)
+  if (!key) return null
+  const snap = await rtdbGet(rtdbRef(rtdb, `qualifiche/sessions/${key}`))
   if (!snap.exists()) return null
   const val = snap.val()
   return { payload: JSON.parse(LZString.decompressFromBase64(val.data)), timestamp: val.timestamp }
@@ -635,16 +646,29 @@ export default function Qualifiche() {
   const [saving, setSaving]   = useState(false)
   const [loading, setLoading] = useState(false)
 
-  // Load regolamenti + last saved session on mount
+  // Load regolamenti on mount + ripristina ultima competizione selezionata
   useEffect(() => {
     cloudLoadRegolamenti()
-      .then(regs => setRegolamenti(regs))
+      .then(regs => {
+        setRegolamenti(regs)
+        const lastComp = localStorage.getItem(LAST_COMP_KEY)
+        if (lastComp) setCompetizione(lastComp)
+      })
       .catch(() => {})
+  }, [])
 
-    cloudLoad().then(res => {
+  // Auto-carica sessione quando cambia la competizione
+  useEffect(() => {
+    if (!competizione) return
+    localStorage.setItem(LAST_COMP_KEY, competizione)
+    setXlsxRows([])
+    setEsteri([])
+    setRinunce(new Set())
+    setFileName('')
+    setStatus('')
+    cloudLoad(competizione).then(res => {
       if (!res) return
       const p = res.payload
-      setCompetizione(p.competizione || '')
       setXlsxRows(p.xlsxRows || [])
       setEsteri(p.esteri || [])
       setRinunce(new Set(p.rinunce || []))
@@ -652,8 +676,9 @@ export default function Qualifiche() {
       setFilterSesso(p.filterSesso || 'Tutti')
       setSoloUnNome(p.soloUnNome ?? true)
       if (p.xlsxRows?.length) setFileName('(sessione salvata)')
+      setStatus(`Sessione caricata per: ${competizione}`)
     }).catch(() => {})
-  }, [])
+  }, [competizione])
 
   // Carica e parsa il PDF del regolamento quando cambia la competizione
   useEffect(() => {
@@ -714,18 +739,19 @@ export default function Qualifiche() {
   }
 
   async function handleLoad() {
+    if (!competizione) { setStatus('Seleziona prima una competizione.'); return }
     setLoading(true); setStatus('')
     try {
-      const res = await cloudLoad()
-      if (!res) { setStatus('Nessuna sessione trovata.'); return }
+      const res = await cloudLoad(competizione)
+      if (!res) { setStatus('Nessuna sessione trovata per questa competizione.'); return }
       const p = res.payload
-      setCompetizione(p.competizione || '')
       setXlsxRows(p.xlsxRows || [])
       setEsteri(p.esteri || [])
       setRinunce(new Set(p.rinunce || []))
       setFilterVasca(p.filterVasca || 'Tutte')
       setFilterSesso(p.filterSesso || 'Tutti')
       setSoloUnNome(p.soloUnNome ?? true)
+      if (p.xlsxRows?.length) setFileName('(sessione salvata)')
       setStatus(`Sessione caricata (${new Date(res.timestamp).toLocaleString('it-IT')})`)
     } catch (e) { setStatus('Errore caricamento: ' + e.message) }
     finally { setLoading(false) }
