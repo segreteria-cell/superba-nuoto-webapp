@@ -278,9 +278,22 @@ function gFindAthletes(sessoRows, sesso, spec, dist, cat) {
   }).sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
 }
 
-function buildRiepilogo(rows) {
-  const F = rows.filter(r => r.sesso === 'Female')
-  const M = rows.filter(r => r.sesso === 'Male')
+function buildRiepilogo(rows, programma) {
+  // se c'è un programma, conta solo le righe che matchano gare del programma
+  function matchesProgram(r) {
+    if (!programma || !programma.length) return true
+    for (const g of programma)
+      for (const s of g.sessioni)
+        for (const ga of s.gare) {
+          if (ga.sesso && ga.sesso !== r.sesso) continue
+          const legDist = (typeof ga.dist === 'string' && ga.dist.includes('x'))
+            ? parseInt(ga.dist.split('x')[1]) : ga.dist
+          if (r.specialita === ga.spec && r.distanza === legDist) return true
+        }
+    return false
+  }
+  const F = rows.filter(r => r.sesso === 'Female' && matchesProgram(r))
+  const M = rows.filter(r => r.sesso === 'Male'   && matchesProgram(r))
   const atletiF = new Set(F.map(r => r.atleta)).size
   const atletiM = new Set(M.map(r => r.atleta)).size
   const ws = {}; const merges = []; let row = 0
@@ -341,7 +354,7 @@ function buildGrigliaSheet(rows, sesso, programma) {
 
   for (let c = 0; c < nCols; c++) wsCell(ws, 0, c, c === 0 ? `GRIGLIA GARE  —  ${sessoLabel}` : null, STL.title)
   if (nCols > 1) merges.push({ s: {r:0,c:0}, e: {r:0,c:nCols-1} })
-  giorni.forEach((g, ci) => wsCell(ws, 1, ci, `GIORNO ${g.giornata}`, STL.day))
+  giorni.forEach((g, ci) => wsCell(ws, 1, ci, `GIORNO ${g.giornata}  •  ${g.data}`, STL.day))
 
   const plans = giorni.map(g => {
     const plan = []
@@ -430,7 +443,7 @@ function buildElencoSheet(rows, sesso) {
 
 function exportGrigliaGare(rows, competizione, programma) {
   const wb = XLSXStyle.utils.book_new()
-  XLSXStyle.utils.book_append_sheet(wb, buildRiepilogo(rows), 'Riepilogo')
+  XLSXStyle.utils.book_append_sheet(wb, buildRiepilogo(rows, programma), 'Riepilogo')
   if (programma && programma.length > 0) {
     XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Female', programma), 'Femminile')
     XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Male',   programma), 'Maschile')
