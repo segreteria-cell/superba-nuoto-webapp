@@ -764,24 +764,51 @@ export default function Qualifiche() {
   const btnDanger  = `${btnBase} bg-red-500 text-white hover:bg-red-600`
 
   return (
-    <div className="p-6 space-y-5">
-      {/* ── TOP BAR ── */}
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-bold text-sb-text flex-1">Qualifiche</h1>
-        {/* Competizione */}
-        <div className="flex items-center gap-2">
-          <select
-            className="bg-sb-bg border border-sb-sep rounded px-3 py-1.5 text-sm text-sb-text focus:outline-none focus:border-sb-blue"
-            value={competizione} onChange={e => setCompetizione(e.target.value)}
-          >
-            <option value="">— Seleziona competizione —</option>
-            {regolamenti.map(r => <option key={r.id} value={r.nome}>{r.nome}</option>)}
-          </select>
-          {pdfLoading && <span className="text-xs text-sb-muted animate-pulse">⏳ Caricamento PDF…</span>}
-          {!pdfLoading && programma.length > 0 && <span className="text-xs text-sb-green">✓ Programma ({programma.length} giorni)</span>}
-          {!pdfLoading && competizione && programma.length === 0 && <span className="text-xs text-sb-muted">⚠ Nessun programma nel PDF</span>}
+    <div>
+      {/* ── STICKY TOP BAR ── */}
+      <div className="sticky top-0 z-20 bg-sb-bg border-b border-sb-sep -mx-5 -mt-5 px-5 py-3 space-y-2">
+        {/* Riga 1: titolo + competizione */}
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-xl font-bold text-sb-text">Qualifiche</h1>
+          <div className="flex items-center gap-2 flex-1">
+            <select
+              className="bg-white border border-sb-sep rounded px-3 py-1.5 text-sm text-sb-text focus:outline-none focus:border-sb-blue"
+              value={competizione} onChange={e => setCompetizione(e.target.value)}
+            >
+              <option value="">— Seleziona competizione —</option>
+              {regolamenti.map(r => <option key={r.id} value={r.nome}>{r.nome}</option>)}
+            </select>
+            {pdfLoading && <span className="text-xs text-sb-muted animate-pulse">⏳ Caricamento PDF…</span>}
+            {!pdfLoading && programma.length > 0 && <span className="text-xs text-sb-green">✓ Programma ({programma.length} giorni)</span>}
+            {!pdfLoading && competizione && programma.length === 0 && <span className="text-xs text-sb-muted">⚠ Nessun programma nel PDF</span>}
+          </div>
+        </div>
+        {/* Riga 2: bottoni azione */}
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => exportExcel(filtered, competizione)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
+            📊 Esporta Excel
+          </button>
+          <button onClick={() => exportGrigliaGare(filtered, competizione, programma)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
+            📋 Genera Griglia Gare {programma.length > 0 && <span className="text-xs opacity-70">({programma.length}gg)</span>}
+          </button>
+          <button onClick={() => setShowAnalisi(true)} disabled={filtered.length === 0} className={btnSecond + ' disabled:opacity-40'}>
+            📈 Analisi Sezione
+          </button>
+          <div className="flex-1" />
+          <button onClick={handleLoad} disabled={loading} className={btnSecond + ' disabled:opacity-40'}>
+            {loading ? '⏳ Caricamento…' : '☁️ Carica Sessione'}
+          </button>
+          <button onClick={handleSave} disabled={saving || allRows.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
+            {saving ? '⏳ Salvataggio…' : '💾 Salva'}
+          </button>
+          <a href="https://aqt.ficr.it" target="_blank" rel="noopener noreferrer"
+            className={`${btnSecond} no-underline inline-flex items-center gap-1`}>
+            🔍 Verifica su AQT
+          </a>
         </div>
       </div>
+
+      <div className="space-y-5 pt-5">
 
       {/* ── IMPORT AREA ── */}
       <div
@@ -954,33 +981,6 @@ export default function Qualifiche() {
         </div>
       )}
 
-      {/* ── ACTION BUTTONS ── */}
-      <div className="flex flex-wrap gap-2 pt-2 border-t border-sb-sep">
-        <button onClick={() => exportExcel(filtered, competizione)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
-          📊 Esporta Excel
-        </button>
-        <button onClick={() => exportGrigliaGare(filtered, competizione, programma)} disabled={filtered.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
-          📋 Genera Griglia Gare {programma.length > 0 && <span className="text-xs opacity-70">({programma.length}gg)</span>}
-        </button>
-        <button onClick={() => setShowAnalisi(true)} disabled={filtered.length === 0} className={btnSecond + ' disabled:opacity-40'}>
-          📈 Analisi Sezione
-        </button>
-        <div className="flex-1" />
-        <button onClick={handleLoad} disabled={loading} className={btnSecond + ' disabled:opacity-40'}>
-          {loading ? '⏳ Caricamento…' : '☁️ Carica Sessione'}
-        </button>
-        <button onClick={handleSave} disabled={saving || allRows.length === 0} className={btnPrimary + ' disabled:opacity-40'}>
-          {saving ? '⏳ Salvataggio…' : '💾 Salva'}
-        </button>
-        <a
-          href="https://aqt.ficr.it"
-          target="_blank" rel="noopener noreferrer"
-          className={`${btnSecond} no-underline inline-flex items-center gap-1`}
-        >
-          🔍 Verifica su AQT
-        </a>
-      </div>
-
       {/* ── STATUS ── */}
       {status && (
         <div className={`text-sm px-4 py-2 rounded-lg ${status.startsWith('Errore') ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
@@ -1009,7 +1009,7 @@ export default function Qualifiche() {
           onClose={() => setShowRinunce(false)}
           onSave={sel => setRinunce(sel)}
         />
-      )}
+          )}
       {showAnalisi && (
         <ModalAnalisiSezione
           rows={filtered}
@@ -1017,5 +1017,6 @@ export default function Qualifiche() {
         />
       )}
     </div>
+  </div>
   )
 }
