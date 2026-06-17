@@ -66,6 +66,14 @@ export async function extractPdfText(base64) {
   return text
 }
 
+// Normalizza notazioni categoria con spazi ("J /C/ S" → "J/C/S")
+function normalizeLine(line) {
+  return line
+    .replace(/J\s*\/\s*C\s*\/\s*S/gi, 'J/C/S')
+    .replace(/J\s*\/\s*C/gi, 'J/C')
+    .replace(/\s{2,}/g, ' ')
+}
+
 // ── parser formato FIN-2 (Giorno N, Sezione femminile/maschile) ───────────────
 // Formato: "Sezione femminile: 26-29 marzo 2026" → "Giorno 1" → "1. 200 farfalla"
 // Layout PDF a 2 colonne (MATTINO / POMERIGGIO): il testo estratto può avere
@@ -205,7 +213,7 @@ function parseProgrammaFIN2(lines) {
 // ── parse programma gare ───────────────────────────────────────────────────────
 
 export function parseProgramma(text) {
-  const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean)
+  const lines = text.split(/[\n\r]+/).map(l => normalizeLine(l.trim())).filter(Boolean)
   const result = []
   let curGiornata = null
   let curSessione = null
@@ -218,7 +226,7 @@ export function parseProgramma(text) {
   const RE_GIORN = /^(I{1,3}V?|V?I{0,3})\s+giornata\s*[–-]\s*(.+)/i
 
   // Sessione (anche maiuscolo come nel PDF)
-  const RE_SESS = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)$/i
+  const RE_SESS = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)(?:\s+(?:Mattino|Mattina|Pomeriggio))?$/i
 
   for (const line of lines) {
     const mg = RE_GIORN.exec(line)
