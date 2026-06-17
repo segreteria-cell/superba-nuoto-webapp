@@ -118,6 +118,7 @@ export default function Regolamenti() {
   const [programma,    setProgramma]    = useState(null)   // { id, nome, giorni }
   const [progLoading,  setProgLoading]  = useState(null)   // id in caricamento
   const [progGiornata, setProgGiornata] = useState(0)      // indice giornata attiva nel popup
+  const [showRaw,      setShowRaw]      = useState(false)  // mostra testo grezzo PDF
   const [deleting,     setDeleting]     = useState(null)
   const [error,        setError]        = useState('')
 
@@ -209,7 +210,7 @@ export default function Regolamenti() {
       if (!base64) { setError('File non trovato.'); return }
       const text   = await extractPdfText(base64)
       const giorni = parseProgramma(text)
-      setProgramma({ id: item.id, nome: item.nome, giorni }); setProgGiornata(0)
+      setProgramma({ id: item.id, nome: item.nome, giorni, rawText: text }); setProgGiornata(0); setShowRaw(false)
     } catch (e) {
       setError('Errore parsing: ' + e.message)
     } finally {
@@ -496,8 +497,20 @@ export default function Regolamenti() {
               ))}
             </div>
 
+            {/* Raw text panel */}
+            {showRaw && (
+              <div className="border-t border-sb-sep bg-sb-bg px-5 py-3 flex-shrink-0" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                <pre className="text-xs text-sb-muted whitespace-pre-wrap font-mono">{programma.rawText}</pre>
+              </div>
+            )}
+
             {/* Footer */}
-            <div className="flex justify-end px-5 py-3 border-t border-sb-sep flex-shrink-0">
+            <div className="flex items-center justify-between px-5 py-3 border-t border-sb-sep flex-shrink-0">
+              <button onClick={() => setShowRaw(v => !v)}
+                className={'px-3 py-1.5 text-xs rounded-lg border transition-colors ' +
+                  (showRaw ? 'border-sb-blue text-sb-blue bg-blue-50' : 'border-sb-sep text-sb-muted hover:bg-sb-sep')}>
+                {showRaw ? 'Nascondi testo' : 'Testo raw PDF'}
+              </button>
               <button onClick={() => setProgramma(null)}
                 className="px-4 py-1.5 text-sm rounded-lg border border-sb-sep hover:bg-sb-sep text-sb-text transition-colors">
                 Chiudi
