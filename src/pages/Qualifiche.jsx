@@ -278,22 +278,9 @@ function gFindAthletes(sessoRows, sesso, spec, dist, cat) {
   }).sort((a, b) => b.fina - a.fina || timeToSecs(a.tempo) - timeToSecs(b.tempo))
 }
 
-function buildRiepilogo(rows, programma) {
-  // se c'è un programma, conta solo le righe che matchano gare del programma
-  function matchesProgram(r) {
-    if (!programma || !programma.length) return true
-    for (const g of programma)
-      for (const s of g.sessioni)
-        for (const ga of s.gare) {
-          if (ga.sesso && ga.sesso !== r.sesso) continue
-          const legDist = (typeof ga.dist === 'string' && ga.dist.includes('x'))
-            ? parseInt(ga.dist.split('x')[1]) : ga.dist
-          if (r.specialita === ga.spec && r.distanza === legDist) return true
-        }
-    return false
-  }
-  const F = rows.filter(r => r.sesso === 'Female' && matchesProgram(r))
-  const M = rows.filter(r => r.sesso === 'Male'   && matchesProgram(r))
+function buildRiepilogo(rows) {
+  const F = rows.filter(r => r.sesso === 'Female')
+  const M = rows.filter(r => r.sesso === 'Male')
   const atletiF = new Set(F.map(r => r.atleta)).size
   const atletiM = new Set(M.map(r => r.atleta)).size
   const ws = {}; const merges = []; let row = 0
@@ -307,7 +294,7 @@ function buildRiepilogo(rows, programma) {
   ;['SEZIONE','PRESENZE GARA','NUMERO ATLETI'].forEach((h, c) => wsCell(ws, row, c, h, sHdr)); row++
   wsCell(ws, row, 0, 'Femminile'); wsCell(ws, row, 1, F.length, {}); wsCell(ws, row, 2, atletiF, {}); row++
   wsCell(ws, row, 0, 'Maschile');  wsCell(ws, row, 1, M.length, {}); wsCell(ws, row, 2, atletiM, {}); row++
-  wsCell(ws, row, 0, 'TOTALE COMPLESSIVO', sBold); wsCell(ws, row, 1, rows.length, sBold); wsCell(ws, row, 2, atletiF + atletiM, sBold); row++
+  wsCell(ws, row, 0, 'TOTALE COMPLESSIVO', sBold); wsCell(ws, row, 1, F.length + M.length, sBold); wsCell(ws, row, 2, atletiF + atletiM, sBold); row++
   row++
 
   wsCell(ws, row, 0, 'DETTAGLIO PER GARA', sBold); wsCell(ws, row, 1, null); wsCell(ws, row, 2, null)
@@ -336,8 +323,12 @@ function buildGrigliaSheet(rows, sesso, programma) {
   const giorni = programma.filter(g => g.sessioni.some(s => s.gare.some(ga => !ga.sesso || ga.sesso === sesso)))
   const nCols = giorni.length
 
-  if (nCols === 0) {
-    ws['A1'] = { v: 'Nessuna gara nel programma', t: 's', s: {} }; ws['!ref'] = 'A1'; return ws
+  // fallback: nessun giorno trovato O nessun atleta di questo sesso nell'xlsx
+  if (nCols === 0 || !sessoRows.length) {
+    ws['A1'] = { v: sessoRows.length === 0
+      ? 'Nessun atleta qualificato per questo sesso'
+      : 'Nessuna gara nel programma per questo sesso', t: 's', s: {} }
+    ws['!ref'] = 'A1'; return ws
   }
 
   ws['!cols'] = giorni.map(() => ({ wch: 26 }))
@@ -385,6 +376,37 @@ function buildGrigliaSheet(rows, sesso, programma) {
     }
     return plan
   })
+
+  // Se tutti gli eventi del programma non hanno atleti, aggiungi colonna fallback con dati xlsx
+  const allEmpty = plans.every(plan =>
+    plan.every(item => !item.text || item.text === 'nessun qualificato' || item.text.startsWith('▸') || item.text === ''))
+  if (allEmpty && sessoRows.length > 0) {
+    // crea una colonna extra con gli atleti dall'xlsx per questo sesso
+    const byEvent = {}
+    for (const r of sessoRows) {
+      const code = gEventCode(r.distanza, r.specialita)
+      if (!byEvent[code]) byEvent[code] = []
+      byEvent[code].push(r)
+    }
+    const fallback = [{ text: '(gare non in programma)', style: STL.noatl }]
+    for (const [code, atls] of Object.entries(byEvent).sort()) {
+      fallback.push({ text: `  ${code}`, style: STL.event })
+      for (const a of atls.sort((x,y) => y.fina - x.fina))
+        fallback.push({ text: `  ${a.atleta}`, style: STL.atl })
+      fallback.push({ text: '', style: {} })
+    }
+    const totalCols = nCols + 1
+    ws['!cols'] = [...giorni.map(() => ({ wch: 26 })), { wch: 26 }]
+    wsCell(ws, 0, nCols, null, STL.title)
+    wsCell(ws, 1, nCols, 'Qualifiche (fuori programma)', STL.day)
+    fallback.forEach((item, ri) => wsCell(ws, 2 + ri, nCols, item.text, item.style))
+    if (nCols > 0) merges.push({ s: {r:0,c:0}, e: {r:0,c:totalCols-1} })
+    const maxRows2 = Math.max(...plans.map(p => p.length), fallback.length)
+    plans.forEach((plan, ci) => plan.forEach((item, ri) => wsCell(ws, 2 + ri, ci, item.text, item.style)))
+    ws['!merges'] = merges
+    ws['!ref'] = XLSXStyle.utils.encode_range({ s: {r:0,c:0}, e: {r:2+maxRows2,c:totalCols-1} })
+    return ws
+  }
 
   const maxRows = Math.max(...plans.map(p => p.length))
   plans.forEach((plan, ci) => plan.forEach((item, ri) => wsCell(ws, 2 + ri, ci, item.text, item.style)))
@@ -443,7 +465,7 @@ function buildElencoSheet(rows, sesso) {
 
 function exportGrigliaGare(rows, competizione, programma) {
   const wb = XLSXStyle.utils.book_new()
-  XLSXStyle.utils.book_append_sheet(wb, buildRiepilogo(rows, programma), 'Riepilogo')
+  XLSXStyle.utils.book_append_sheet(wb, buildRiepilogo(rows), 'Riepilogo')
   if (programma && programma.length > 0) {
     XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Female', programma), 'Femminile')
     XLSXStyle.utils.book_append_sheet(wb, buildGrigliaSheet(rows, 'Male',   programma), 'Maschile')
