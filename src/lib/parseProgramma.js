@@ -66,6 +66,142 @@ export async function extractPdfText(base64) {
   return text
 }
 
+// ── parser formato FIN-2 (Giorno N, Sezione femminile/maschile) ───────────────
+// Formato: "Sezione femminile: 26-29 marzo 2026" → "Giorno 1" → "1. 200 farfalla"
+// Layout PDF a 2 colonne (MATTINO / POMERIGGIO): il testo estratto può avere
+// due eventi sulla stessa riga ("4. 200 rana   7. 200 misti") — li separiamo.
+
+function isFormatoFIN2(lines) {
+  return lines.some(l =>
+    /^giorno\s+\d+/i.test(l) ||
+    /sezione\s+(femminile|maschile)/i.test(l) ||
+    /programma.?gare/i.test(l)
+  )
+}
+
+// "26-29 marzo 2026" → ["26 marzo 2026", "27 marzo 2026", ...]
+function expandDateRange(rangeStr) {
+  const m = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)\s+(\d{4})/)
+  if (!m) return []
+  const start = parseInt(m[1])
+  const end   = m[2] ? parseInt(m[2]) : start
+  const mese  = m[3]; const anno = m[4]
+  const dates = []
+  for (let d = start; d <= end; d++) dates.push(`${d} ${mese} ${anno}`)
+  return dates
+}
+
+// Separa più gare dalla stessa riga (layout 2 colonne)
+// Es: "4. 200 rana 7. 200 misti" → ["4. 200 rana", "7. 200 misti"]
+function splitEventsLine(line) {
+  const RE = /\d+\s*[.)]\s*(?:\d+x\d+|\d+)\s+(?:stile\s+libero|farfalla|dorso|rana|misti|misto)/gi
+  const matches = []
+  let m
+  while ((m = RE.exec(line)) !== null) matches.push({ idx: m.index, text: m[0] })
+  if (matches.length <= 1) return [line]
+  // estrai ciascun match fino al successivo
+  return matches.map((m, i) => {
+    const end = matches[i + 1] ? matches[i + 1].idx : line.length
+    return line.slice(m.idx, end).trim()
+  })
+}
+
+// "1. 200 farfalla" o "1 200 farfalla" → { num, dist, spec }
+function parseNumberedEvent(str) {
+  const m = str.match(/^(\d+)\s*[.)]?\s*(\d+(?:x\d+)?)\s+([\wàèéìòù ]+?)(?:\s+(F|M|femmine|maschi|donne|uomini))?(?:\s+(J\/C\/S|J\/C|S|R\d\w*))?$/i)
+  if (!m) return null
+  const distRaw = m[2]
+  const dist = distRaw.includes('x') ? distRaw : parseInt(distRaw)
+  const spec = normSpec(m[3].trim())
+  const sessoRaw = m[4] || null
+  const sesso = sessoRaw ? normSesso(sessoRaw) : null   // null = usa sesso sezione
+  const catRaw = m[5] || ''
+  const cat = catRaw ? normCat(catRaw) : null
+  return { dist, spec, sesso, catRaw, cat }
+}
+
+function parseProgrammaFIN2(lines) {
+  const result = []
+  let curSesso   = null   // Female | Male | null
+  let sectionDates = []   // array di date per i giorni della sezione
+  let curGiornata  = null
+  let curSessione  = null
+  let dayIndex     = 0    // indice giornata dentro la sezione corrente
+
+  const RE_SECTION  = /sezione\s+(femminile|maschile)\s*[:\-–]?\s*(.*)/i
+  const RE_GIORNO   = /^giorno\s+(\d+)/i
+  const RE_SESSION  = /^(mattino|mattina|pomeriggio)$/i
+  const RE_NUMBERED = /^\d+\s*[.)]/
+
+  for (const line of lines) {
+    // Sezione femminile/maschile
+    const ms = RE_SECTION.exec(line)
+    if (ms) {
+      curSesso = normSesso(ms[1])
+      sectionDates = expandDateRange(ms[2].trim())
+      dayIndex = 0
+      curGiornata = null; curSessione = null
+      continue
+    }
+
+    // "Giorno N"
+    const mg = RE_GIORNO.exec(line)
+    if (mg) {
+      const n = parseInt(mg[1])
+      const data = sectionDates[n - 1] || `Giorno ${n}`
+      // Se già esiste un giornata con stessa data, riusa
+      const existing = result.find(g => g.data === data)
+      if (existing) {
+        curGiornata = existing
+      } else {
+        curGiornata = { giornata: String(n), data, sessioni: [] }
+        result.push(curGiornata)
+      }
+      // Sessione di default se non ancora creata
+      curSessione = null
+      dayIndex++
+      continue
+    }
+
+    // Sessione MATTINO / POMERIGGIO (può apparire combinata nella stessa riga)
+    if (/mattino|mattina|pomeriggio/i.test(line) && !/\d/.test(line)) {
+      const parts = line.split(/\s{2,}/)
+      // crea sessioni nell'ordine in cui appaiono (MATTINO prima, POMERIGGIO dopo)
+      // ma non sovrascriviamo curSessione qui: la prossima gara finirà nella sessione corrente
+      // Usiamo la prima sessione citata come corrente
+      if (curGiornata) {
+        const nomeSess = /mattino|mattina/i.test(line) ? 'Mattino' : 'Pomeriggio'
+        curSessione = curGiornata.sessioni.find(s => s.nome === nomeSess)
+        if (!curSessione) {
+          curSessione = { nome: nomeSess, gare: [] }
+          curGiornata.sessioni.push(curSessione)
+        }
+      }
+      continue
+    }
+
+    // Gara numerata
+    if (RE_NUMBERED.test(line) && curGiornata) {
+      // può contenere due gare (layout 2 colonne)
+      const parts = splitEventsLine(line)
+      for (const part of parts) {
+        const ev = parseNumberedEvent(part)
+        if (!ev) continue
+        const sesso = ev.sesso || curSesso   // fallback al sesso della sezione
+        // Se non c'è sessione corrente, crea "Pomeriggio" di default
+        if (!curSessione) {
+          curSessione = { nome: 'Pomeriggio', gare: [] }
+          curGiornata.sessioni.push(curSessione)
+        }
+        curSessione.gare.push({ tipo: 'Batterie', dist: ev.dist, spec: ev.spec, sesso, cat: ev.cat, catRaw: ev.catRaw })
+      }
+    }
+  }
+
+  return result
+}
+
+
 // ── parse programma gare ───────────────────────────────────────────────────────
 
 export function parseProgramma(text) {
@@ -111,6 +247,11 @@ export function parseProgramma(text) {
       if (/finali/i.test(tipo)) continue
       curSessione.gare.push({ tipo, dist, spec, sesso, cat, catRaw })
     }
+  }
+
+  // Se il formato classico non ha estratto nulla, prova formato FIN-2
+  if (result.length === 0 && isFormatoFIN2(lines)) {
+    return parseProgrammaFIN2(lines)
   }
 
   return result
