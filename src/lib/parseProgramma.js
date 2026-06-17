@@ -217,8 +217,8 @@ export function parseProgramma(text) {
   // Giornata: "I giornata – 31 luglio" o "II giornata – 1° agosto"
   const RE_GIORN = /^(I{1,3}V?|V?I{0,3})\s+giornata\s*[–-]\s*(.+)/i
 
-  // Sessione
-  const RE_SESS = /^(Mattino|Mattina|Pomeriggio)$/i
+  // Sessione (anche maiuscolo come nel PDF)
+  const RE_SESS = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)$/i
 
   for (const line of lines) {
     const mg = RE_GIORN.exec(line)
@@ -246,6 +246,16 @@ export function parseProgramma(text) {
       // Salta "Finali singole" (già coperto dalla batteria)
       if (/finali/i.test(tipo)) continue
       curSessione.gare.push({ tipo, dist, spec, sesso, cat, catRaw })
+      continue
+    }
+    // Fallback: gara numerata "1. 200 farfalla" o "1. 4x100 stile libero F J/C"
+    if (curSessione && /^\d+\s*[.)]/.test(line)) {
+      // può contenere 2 gare (layout 2 colonne) — separiamo
+      const parts = splitEventsLine(line)
+      for (const part of parts) {
+        const ev = parseNumberedEvent(part)
+        if (ev) curSessione.gare.push({ tipo: 'Batterie', dist: ev.dist, spec: ev.spec, sesso: ev.sesso, cat: ev.cat, catRaw: ev.catRaw })
+      }
     }
   }
 
