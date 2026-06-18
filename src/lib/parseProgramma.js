@@ -112,23 +112,45 @@ function parseNumberedEvent(str) {
   return { dist, spec, sesso, catRaw, cat }
 }
 
-// "26-29 marzo 2026" o "4-7 agosto" -> ["26 marzo 2026", ...]
-function expandDateRange(rangeStr) {
-  const m = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)\s+(\d{4})/)
-  if (m) {
-    const start = parseInt(m[1]), end = m[2] ? parseInt(m[2]) : start
-    const mese = m[3], anno = m[4]
-    const dates = []
-    for (let d = start; d <= end; d++) dates.push(`${d} ${mese} ${anno}`)
-    return dates
+const MESI_IT = ['gennaio','febbraio','marzo','aprile','maggio','giugno',
+                 'luglio','agosto','settembre','ottobre','novembre','dicembre']
+function meseNum(s) { return MESI_IT.findIndex(m => s.toLowerCase().startsWith(m.slice(0,3))) }
+
+// Genera array di date da startDate a endDate (inclusive)
+function dateRange(startDate, endDate, anno) {
+  const dates = []
+  const d = new Date(anno, startDate.m, startDate.d)
+  const e = new Date(anno, endDate.m, endDate.d)
+  while (d <= e) {
+    dates.push(`${d.getDate()} ${MESI_IT[d.getMonth()]} ${d.getFullYear()}`)
+    d.setDate(d.getDate() + 1)
   }
-  const m2 = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)/)
-  if (m2) {
+  return dates
+}
+
+// "26-29 marzo 2026" o "30 marzo – 2 aprile 2026" o "4-7 agosto" -> ["26 marzo 2026", ...]
+function expandDateRange(rangeStr) {
+  // Range cross-mese: "30 marzo – 2 aprile 2026" o "30 marzo – 2 aprile"
+  const cx = rangeStr.match(/(\d+)\s+(\w+)\s*[-–]\s*(\d+)\s+(\w+)(?:\s+(\d{4}))?/i)
+  if (cx && meseNum(cx[2]) >= 0) {
+    const anno    = cx[5] ? parseInt(cx[5]) : new Date().getFullYear()
+    const startM  = meseNum(cx[2]), endM = meseNum(cx[4])
+    if (startM >= 0 && endM >= 0)
+      return dateRange({ d: parseInt(cx[1]), m: startM }, { d: parseInt(cx[3]), m: endM >= startM ? endM : endM + 12 }, anno)
+  }
+  // Range stesso mese con anno: "26-29 marzo 2026"
+  const m = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)\s+(\d{4})/i)
+  if (m && meseNum(m[3]) >= 0) {
+    const mese = meseNum(m[3]), anno = parseInt(m[4])
+    const start = parseInt(m[1]), end = m[2] ? parseInt(m[2]) : start
+    return dateRange({ d: start, m: mese }, { d: end, m: mese }, anno)
+  }
+  // Senza anno
+  const m2 = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)/i)
+  if (m2 && meseNum(m2[3]) >= 0) {
+    const mese = meseNum(m2[3]), anno = new Date().getFullYear()
     const start = parseInt(m2[1]), end = m2[2] ? parseInt(m2[2]) : start
-    const mese = m2[3]
-    const dates = []
-    for (let d = start; d <= end; d++) dates.push(`${d} ${mese}`)
-    return dates
+    return dateRange({ d: start, m: mese }, { d: end, m: mese }, anno)
   }
   return []
 }
@@ -204,7 +226,7 @@ function parseProgrammaFIN2(lines) {
   let curSessione  = null
   let sectionId    = 0   // incrementa per ogni sezione: evita merge Giorno 1 F + Giorno 1 M
 
-  const RE_SECTION = /sezione\s+(femminile|maschile)\s*[:\-–]?\s*(.*)/i
+  const RE_SECTION = /^sezione\s+(femminile|maschile)\s*[:\-–]?\s*(.*)/i
   const RE_GIORNO  = /^giorno\s+(\d+)(?:\s*[:\-–]\s*(.+))?/i
 
   for (const line of lines) {
