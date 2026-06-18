@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import LZString from 'lz-string'
 import { ref as rtdbRef, set as rtdbSet, get as rtdbGet, remove as rtdbRemove } from 'firebase/database'
-import { extractPdfText, parseProgramma } from '../lib/parseProgramma'
+import { extractPdfText, parseProgramma, parseProgrammaVision } from '../lib/parseProgramma'
 import { rtdb } from '../lib/firebase'
 
 // ── Pattern identico a Graduatorie ───────────────────────────────────────────
@@ -209,7 +209,11 @@ export default function Regolamenti() {
       const base64 = await cloudLoadFile(item.id)
       if (!base64) { setError('File non trovato.'); return }
       const text   = await extractPdfText(base64)
-      const giorni = parseProgramma(text)
+      let   giorni = parseProgramma(text)
+      if (giorni.length === 0 && import.meta.env.VITE_ANTHROPIC_KEY) {
+        console.log('[Vision] parser testuale: 0 giornate, uso Claude vision...')
+        giorni = await parseProgrammaVision(base64)
+      }
       setProgramma({ id: item.id, nome: item.nome, giorni, rawText: text }); setProgGiornata(0); setShowRaw(false)
     } catch (e) {
       setError('Errore parsing: ' + e.message)
@@ -512,7 +516,7 @@ export default function Regolamenti() {
                 {showRaw ? 'Nascondi testo' : 'Testo raw PDF'}
               </button>
               <button onClick={() => setProgramma(null)}
-                className="px-4 py-1.5 text-sm rounded-lg border border-sb-sep hover:bg-sb-sep text-sb-text transition-colors">
+                               className="px-4 py-1.5 text-sm rounded-lg border border-sb-sep hover:bg-sb-sep text-sb-text transition-colors">
                 Chiudi
               </button>
             </div>

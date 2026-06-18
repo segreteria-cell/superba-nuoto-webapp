@@ -109,6 +109,8 @@ function normalizeCol(col) {
        .replace(/Nov\s+embre/gi,   'Novembre')
        .replace(/Dic\s+embre/gi,   'Dicembre')
        .replace(/Dice\s+mbre/gi,   'Dicembre')
+  // Normalizza "a .m." / "p .m." -> "a.m." / "p.m."
+  s = s.replace(/\b([ap])\s*\.\s*m\s*\./gi, '$1.m.')
   return s.trim()
 }
 
@@ -445,7 +447,7 @@ function parseProgrammaFIN4(lines) {
   return result
 }
 
-// ── entry point ───────────────────────────────────────────────────────────────
+// ── entry point (parser testuale) ────────────────────────────────────────────
 
 export function parseProgramma(text) {
   const lines = text.split(/[\n\r]+/).map(l => normalizeLine(l)).filter(l => l.replace(/\t/g,'').trim())
@@ -455,6 +457,95 @@ export function parseProgramma(text) {
   if (fin1.length > 0) return fin1
   if (isFormatoFIN2(lines)) return parseProgrammaFIN2(lines)
   return []
+}
+
+// ── vision parser: usa Claude API per leggere il PDF come immagine ────────────
+// Chiamato come fallback quando parseProgramma restituisce 0 giornate.
+// Richiede VITE_ANTHROPIC_KEY nel .env.local
+
+const VISION_PROMPT = `Sei un assistente per una società di nuoto italiana.
+Questa immagine contiene il programma gare di una manifestazione di nuoto FIN.
+Estrai tutte le gare e restituisci SOLO un array JSON (nessun testo prima o dopo).
+
+Struttura richiesta:
+[
+  {
+    "giornata": "1",
+    "data": "12 Dicembre",
+    "sessioni": [
+      {
+        "nome": "Mattino",
+        "gare": [
+          { "dist": 100, "spec": "DORSO", "sesso": "Female", "cat": null }
+        ]
+      }
+    ]
+  }
+]
+
+Regole:
+- "dist" è un numero intero (es. 50, 100, 200, 400, 800, 1500) oppure stringa per staffette (es. "4x100")
+- "spec" è uno di: STILE, DORSO, RANA, FARFALLA, MISTI
+- "sesso" è "Female" o "Male"
+- "cat" è null oppure: "RAGAZZI", "JUNIORES", "CADETTI", "SENIORES"
+- "nome" sessione è "Mattino" o "Pomeriggio"
+- Se non c'è distinzione di sessione usa "Mattino"
+- Includi TUTTE le gare visibili nell'immagine
+- Se ci sono più giornate crea un oggetto per ciascuna`
+
+export async function parseProgrammaVision(pdfBase64) {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_KEY
+  if (!apiKey) throw new Error('VITE_ANTHROPIC_KEY non configurata in .env.local')
+
+  const binary = atob(pdfBase64)
+  const bytes  = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  const pdf    = await pdfjsLib.getDocument({ data: bytes }).promise
+
+  const images = []
+  for (let p = 1; p <= Math.min(pdf.numPages, 4); p++) {
+    const page     = await pdf.getPage(p)
+    const viewport = page.getViewport({ scale: 2 })
+    const canvas   = document.createElement('canvas')
+    canvas.width   = viewport.width
+    canvas.height  = viewport.height
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
+    images.push(canvas.toDataURL('image/jpeg', 0.85).split(',')[1])
+  }
+
+  const imageContent = images.map(img => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data: img }
+  }))
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [...imageContent, { type: 'text', text: VISION_PROMPT }]
+      }]
+    })
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error('Claude API error ' + res.status + ': ' + err)
+  }
+
+  const data = await res.json()
+  const raw  = data.content?.[0]?.text || ''
+  const match = raw.match(/\[[\s\S]*\]/)
+  if (!match) throw new Error('Claude non ha restituito JSON valido')
+  return JSON.parse(match[0])
 }
 
 // ── parse tabella graduatoria limiti ─────────────────────────────────────────
@@ -473,9 +564,15 @@ export function parseGraduatoriaLimiti(text) {
     if (m) {
       const dist = parseInt(m[1]), spec = normSpec(m[2])
       const nums = m[3].trim().split(/\s+/).map(Number)
-      if (nums[0] !== undefined) limiti[`${dist}|${spec}|Female`] = nums[0]
-      if (nums[1] !== undefined) limiti[`${dist}|${spec}|Male`]   = nums[1]
-      if (nums[2] !== undefined && nums[2] > (limiti[`${dist}|${spec}|Male`] || 0))
+      if (nums[0] !== undefined) limiti[dist+'|'+spec+'|Female'] = nums[0]
+      if (nums[1] !== undefined) limiti[dist+'|'+spec+'|Male']   = nums[1]
+      if (nums[2] !== undefined && nums[2] > (limiti[dist+'|'+spec+'|Male'] || 0))
+        limiti[dist+'|'+spec+'|Male'] = nums[2]
+    }
+  }
+  return limiti
+}
+== undefined && nums[2] > (limiti[`${dist}|${spec}|Male`] || 0))
         limiti[`${dist}|${spec}|Male`] = nums[2]
     }
   }
