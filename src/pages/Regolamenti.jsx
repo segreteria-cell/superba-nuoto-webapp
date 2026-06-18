@@ -442,7 +442,7 @@ export default function Regolamenti() {
                     (progGiornata === i
                       ? 'border-sb-blue text-sb-blue'
                       : 'border-transparent text-sb-muted hover:text-sb-text')}>
-                  Giornata {g.giornata} — {g.data}
+                  {g.data || `Giornata ${g.giornata}`}
                 </button>
               ))}
               {programma.giorni.length === 0 && (

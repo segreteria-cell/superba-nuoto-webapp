@@ -68,10 +68,15 @@ export async function extractPdfText(base64) {
 
 // Normalizza notazioni categoria con spazi ("J /C/ S" → "J/C/S")
 function normalizeLine(line) {
-  return line
+  let s = line
     .replace(/J\s*\/\s*C\s*\/\s*S/gi, 'J/C/S')
     .replace(/J\s*\/\s*C/gi, 'J/C')
     .replace(/\s{2,}/g, ' ')
+  // Merge digit-space-digit (PDF artifacts: "2 00 m" → "200 m", "4 00" → "400")
+  // Apply twice to catch triple splits like "2 0 0"
+  s = s.replace(/(\d)\s+(\d)/g, '$1$2')
+  s = s.replace(/(\d)\s+(\d)/g, '$1$2')
+  return s
 }
 
 // ── parser formato FIN-2 (Giorno N, Sezione femminile/maschile) ───────────────
@@ -87,16 +92,27 @@ function isFormatoFIN2(lines) {
   )
 }
 
-// "26-29 marzo 2026" → ["26 marzo 2026", "27 marzo 2026", ...]
+// "26-29 marzo 2026" o "4-7 agosto" → ["26 marzo 2026", ...] / ["4 agosto", ...]
 function expandDateRange(rangeStr) {
+  // Con anno: "26-29 marzo 2026"
   const m = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)\s+(\d{4})/)
-  if (!m) return []
-  const start = parseInt(m[1])
-  const end   = m[2] ? parseInt(m[2]) : start
-  const mese  = m[3]; const anno = m[4]
-  const dates = []
-  for (let d = start; d <= end; d++) dates.push(`${d} ${mese} ${anno}`)
-  return dates
+  if (m) {
+    const start = parseInt(m[1]), end = m[2] ? parseInt(m[2]) : start
+    const mese = m[3], anno = m[4]
+    const dates = []
+    for (let d = start; d <= end; d++) dates.push(`${d} ${mese} ${anno}`)
+    return dates
+  }
+  // Senza anno: "4-7 agosto" o "4 agosto"
+  const m2 = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)/)
+  if (m2) {
+    const start = parseInt(m2[1]), end = m2[2] ? parseInt(m2[2]) : start
+    const mese = m2[3]
+    const dates = []
+    for (let d = start; d <= end; d++) dates.push(`${d} ${mese}`)
+    return dates
+  }
+  return []
 }
 
 // Separa più gare dalla stessa riga (layout 2 colonne)
@@ -137,7 +153,8 @@ function parseProgrammaFIN2(lines) {
   let dayIndex     = 0    // indice giornata dentro la sezione corrente
 
   const RE_SECTION  = /sezione\s+(femminile|maschile)\s*[:\-–]?\s*(.*)/i
-  const RE_GIORNO   = /^giorno\s+(\d+)/i
+  // Giorno N, opzionalmente con data: "Giorno 1 – 26 agosto 2026" o "Giorno 1: 26 agosto"
+  const RE_GIORNO   = /^giorno\s+(\d+)(?:\s*[:\-–]\s*(.+))?/i
   const RE_SESSION  = /^(mattino|mattina|pomeriggio)$/i
   const RE_NUMBERED = /^\d+\s*[.)]/
 
@@ -152,15 +169,19 @@ function parseProgrammaFIN2(lines) {
       continue
     }
 
-    // "Giorno N"
+    // "Giorno N" (con eventuale data sulla stessa riga)
     const mg = RE_GIORNO.exec(line)
     if (mg) {
       const n = parseInt(mg[1])
-      const data = sectionDates[n - 1] || `Giorno ${n}`
-      // Se già esiste un giornata con stessa data, riusa
-      const existing = result.find(g => g.data === data)
+      // Preferisci data dalla riga, poi da sectionDates, poi fallback
+      const dataInline = mg[2]?.trim()
+      const data = dataInline || sectionDates[n - 1] || null
+      // Se già esiste una giornata con stesso numero, riusa (per merge F+M)
+      const existing = result.find(g => g.giornata === String(n))
       if (existing) {
         curGiornata = existing
+        // aggiorna data se ora la conosciamo
+        if (data && curGiornata.data === null) curGiornata.data = data
       } else {
         curGiornata = { giornata: String(n), data, sessioni: [] }
         result.push(curGiornata)
@@ -222,16 +243,17 @@ export function parseProgramma(text) {
   // o J/C/S: "Batterie 50 m farfalla donne J/C/S"
   const RE_GARA = /^(Serie(?:\s+(?:lente|veloci))?|Batterie|Finali\s+singole)\s+(\d+)(?:x(\d+))?\s*m\s+([\wàèéìòù\s]+?)\s+(F|M|donne|uomini|femmine|maschi)\s*(J\/C\/S|J\/C|S|R\d[-\d]*)?/i
 
-  // Giornata: "I giornata – 31 luglio" o "II giornata – 1° agosto"
-  const RE_GIORN = /^(I{1,3}V?|V?I{0,3})\s+giornata\s*[–-]\s*(.+)/i
+  // Giornata: "I giornata – 31 luglio", "IV giornata – 7 agosto", "Giorno 1 – ..."
+  const RE_GIORN = /^((?:I{1,3}V?|VI{0,3}|IX|XI{0,3}|IV|V)(?:\s+giornata)?|giornata\s+\w+|giorno\s+\d+)\s*[\u2013\u2014\-]\s*(.+)/i
+  const RE_GIORN_SIMPLE = /^(I{1,3}V?|VI{0,3}|IX|XI{0,3})\s+giornata\s*[\u2013\u2014\-]\s*(.+)/i
 
   // Sessione (anche maiuscolo come nel PDF)
   const RE_SESS = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)(?:\s+(?:Mattino|Mattina|Pomeriggio))?$/i
 
   for (const line of lines) {
-    const mg = RE_GIORN.exec(line)
+    const mg = RE_GIORN_SIMPLE.exec(line)
     if (mg) {
-      curGiornata = { giornata: mg[1], data: mg[2].trim(), sessioni: [] }
+      curGiornata = { giornata: mg[1].replace(/\s+giornata/i,'').trim(), data: mg[2].trim(), sessioni: [] }
       curSessione = null
       result.push(curGiornata)
       continue
@@ -255,6 +277,11 @@ export function parseProgramma(text) {
       if (/finali/i.test(tipo)) continue
       curSessione.gare.push({ tipo, dist, spec, sesso, cat, catRaw })
       continue
+    }
+    // Se c'è una giornata aperta ma nessuna sessione, crea "Mattina" di default
+    if (curGiornata && !curSessione && (mc || /^\d+\s*[.)]/.test(line))) {
+      curSessione = { nome: 'Mattina', gare: [] }
+      curGiornata.sessioni.push(curSessione)
     }
     // Fallback: gara numerata "1. 200 farfalla" o "1. 4x100 stile libero F J/C"
     if (curSessione && /^\d+\s*[.)]/.test(line)) {
@@ -299,7 +326,7 @@ export function parseGraduatoriaLimiti(text) {
   const RE_HDR = /^(femmine|maschi|donne|uomini)/i
   const RE_ROW = /^(\d+)\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+([\d\s]+)$/i
 
-  for (const line of lines) {
+  for  (const line of lines) {
     if (RE_HDR.test(line)) {
       colHeaders = line.split(/\s+/).map(h => h.toUpperCase())
       continue
@@ -309,10 +336,16 @@ export function parseGraduatoriaLimiti(text) {
       const dist  = parseInt(m[1])
       const spec  = normSpec(m[2])
       const nums  = m[3].trim().split(/\s+/).map(Number)
-      // nums[0] = femmine, nums[1] = maschi (prima col), nums[2] = maschi (seconda col) se presente
       if (nums[0] !== undefined) limiti[`${dist}|${spec}|Female`] = nums[0]
       if (nums[1] !== undefined) limiti[`${dist}|${spec}|Male`]   = nums[1]
-      // Prendi il massimo per maschi se ci sono due colonne maschili
+      if (nums[2] !== undefined && nums[2] > (limiti[`${dist}|${spec}|Male`] || 0))
+        limiti[`${dist}|${spec}|Male`] = nums[2]
+    }
+  }
+
+  return limiti
+}
+aschili
       if (nums[2] !== undefined && nums[2] > (limiti[`${dist}|${spec}|Male`] || 0))
         limiti[`${dist}|${spec}|Male`] = nums[2]
     }
