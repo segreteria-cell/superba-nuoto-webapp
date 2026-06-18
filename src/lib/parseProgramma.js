@@ -4,7 +4,8 @@
  *
  * FIN1: "I giornata - 4 agosto" + "Batterie 200 m dorso donne J/C/S"
  * FIN2: "Sezione femminile: 26-29 marzo" + "Giorno 1" + "1. 200 farfalla"
- * FIN3: "Batterie e Serie lente" + header "26 Giugno 27 Giugno ..." + eventi a colonne
+ * FIN3: "Batterie e Serie lente" + header "26 Giugno 27 Giugno ..." + eventi col.
+ * FIN4: "Programma - gare" + "12 Dicembre a.m." + "50 farfalla m" (no numeri)
  */
 
 import * as pdfjsLib from 'pdfjs-dist'
@@ -37,11 +38,12 @@ function normCat(s) {
   if (u.includes('JUNIOR'))  return 'JUNIORES'
   if (u.includes('CADET'))   return 'CADETTI'
   if (u.includes('SENIOR'))  return 'SENIORES'
-  if (u.includes('J/C/S') || u.includes('JCS')) return null
   return null
 }
 
-// ── estrai testo da PDF base64 ────────────────────────────────────────────────
+// ── estrai testo da PDF (con colonne separate da TAB) ─────────────────────────
+// Gli elementi sullo stesso Y ma con gap X > 20 pt sono separati da \t.
+// Questo permette ai parser di riconoscere le colonne delle tabelle.
 
 export async function extractPdfText(base64) {
   const binary = atob(base64)
@@ -53,38 +55,70 @@ export async function extractPdfText(base64) {
   for (let p = 1; p <= pdf.numPages; p++) {
     const page    = await pdf.getPage(p)
     const content = await page.getTextContent()
+    // Raggruppa per y-position, mantieni x e width
     const byY = {}
     for (const item of content.items) {
       if (!item.str.trim()) continue
       const y = Math.round(item.transform[5])
       if (!byY[y]) byY[y] = []
-      byY[y].push(item.str)
+      byY[y].push({ str: item.str, x: item.transform[4], w: item.width || 0 })
     }
     const sortedY = Object.keys(byY).map(Number).sort((a, b) => b - a)
-    for (const y of sortedY) text += byY[y].join(' ') + '\n'
+    for (const y of sortedY) {
+      const items = byY[y].sort((a, b) => a.x - b.x)
+      let line = ''; let prevEndX = null
+      for (const item of items) {
+        if (prevEndX !== null) {
+          const gap = item.x - prevEndX
+          line += gap > 20 ? '\t' : ' '   // TAB = separatore di colonna
+        }
+        line += item.str
+        prevEndX = item.x + (item.w > 0 ? item.w : item.str.length * 5.5)
+      }
+      text += line + '\n'
+    }
   }
   console.log('[PDF] testo estratto (prime 500 chars):', text.slice(0, 500))
   return text
 }
 
 // ── normalizza riga PDF ───────────────────────────────────────────────────────
+// Processa ogni colonna (separata da \t) separatamente, poi ricongiunge.
 
-function normalizeLine(line) {
-  let s = line
+function normalizeCol(col) {
+  let s = col
     .replace(/J\s*\/\s*C\s*\/\s*S/gi, 'J/C/S')
     .replace(/J\s*\/\s*C/gi, 'J/C')
     .replace(/\s{2,}/g, ' ')
-  // Merge digit-space-digit: "2 00 m" -> "200 m"  (due passaggi per "2 0 0")
+  // Merge digit-space-digit: "2 00" -> "200"
   s = s.replace(/(\d)\s+(\d)/g, '$1$2')
   s = s.replace(/(\d)\s+(\d)/g, '$1$2')
-  // Merge relay: "4 x200" o "4x 200" -> "4x200"
+  // Merge relay: "4 x200" -> "4x200"
   s = s.replace(/(\d)\s*x\s*(\d)/gi, '$1x$2')
-  return s
+  // Normalizza nomi mese splittati dal PDF: "Dic embre" -> "Dicembre"
+  s = s.replace(/Gen\s+naio/gi,    'Gennaio')
+       .replace(/Feb\s+braio/gi,   'Febbraio')
+       .replace(/Mar\s+zo/gi,      'Marzo')
+       .replace(/Apr\s+ile/gi,     'Aprile')
+       .replace(/Mag\s+gio/gi,     'Maggio')
+       .replace(/Giu\s+gno/gi,     'Giugno')
+       .replace(/Lug\s+lio/gi,     'Luglio')
+       .replace(/Ago\s+sto/gi,     'Agosto')
+       .replace(/Set\s+tembre/gi,  'Settembre')
+       .replace(/Ott\s+obre/gi,    'Ottobre')
+       .replace(/Nov\s+embre/gi,   'Novembre')
+       .replace(/Dic\s+embre/gi,   'Dicembre')
+       .replace(/Dice\s+mbre/gi,   'Dicembre')
+  return s.trim()
+}
+
+function normalizeLine(line) {
+  return line.split('\t').map(normalizeCol).join('\t')
 }
 
 // ── utilita' condivise ────────────────────────────────────────────────────────
 
-// Separa piu' gare dalla stessa riga (layout 2-3 colonne PDF)
+// Separa piu' gare numerate dalla stessa colonna (layout 2-3 colonne PDF)
 function splitEventsLine(line) {
   const RE = /\d+\s*[.)]\s*(?:\d+x\d+|\d+)\s+(?:stile\s+libero|farfalla|dorso|rana|misti|misto)/gi
   const matches = []
@@ -97,7 +131,7 @@ function splitEventsLine(line) {
   })
 }
 
-// "1. 200 farfalla" o "3 . 200 dorso donne J/C" -> { dist, spec, sesso, cat, catRaw }
+// "1. 200 farfalla" -> { dist, spec, sesso, cat, catRaw }
 function parseNumberedEvent(str) {
   const m = str.match(
     /^(\d+)\s*[.)]?\s*(\d+(?:x\d+)?)\s+([\waaeeeiioou ]+?)(?:\s+(F|M|femmine|maschi|donne|uomini))?(?:\s+(J\/C\/S|J\/C|S|R\d?\w*))?$/i
@@ -112,11 +146,18 @@ function parseNumberedEvent(str) {
   return { dist, spec, sesso, catRaw, cat }
 }
 
+// "50 farfalla m" (senza numero) -> { dist, spec, sesso }
+function parseUnnumberedEvent(str) {
+  const m = str.match(/^(\d+(?:x\d+)?)\s+(stile\s+libero|farfalla|dorso|rana|misti|misto)\s+(m|f)/i)
+  if (!m) return null
+  const dist = m[1].toLowerCase().includes('x') ? m[1] : parseInt(m[1])
+  return { dist, spec: normSpec(m[2]), sesso: normSesso(m[3]), cat: null, catRaw: '' }
+}
+
 const MESI_IT = ['gennaio','febbraio','marzo','aprile','maggio','giugno',
                  'luglio','agosto','settembre','ottobre','novembre','dicembre']
 function meseNum(s) { return MESI_IT.findIndex(m => s.toLowerCase().startsWith(m.slice(0,3))) }
 
-// Genera array di date da startDate a endDate (inclusive)
 function dateRange(startDate, endDate, anno) {
   const dates = []
   const d = new Date(anno, startDate.m, startDate.d)
@@ -128,29 +169,26 @@ function dateRange(startDate, endDate, anno) {
   return dates
 }
 
-// "26-29 marzo 2026" o "30 marzo – 2 aprile 2026" o "4-7 agosto" -> ["26 marzo 2026", ...]
 function expandDateRange(rangeStr) {
-  // Range cross-mese: "30 marzo – 2 aprile 2026" o "30 marzo – 2 aprile"
+  // Cross-mese: "30 marzo - 2 aprile 2026"
   const cx = rangeStr.match(/(\d+)\s+(\w+)\s*[-–]\s*(\d+)\s+(\w+)(?:\s+(\d{4}))?/i)
   if (cx && meseNum(cx[2]) >= 0) {
-    const anno    = cx[5] ? parseInt(cx[5]) : new Date().getFullYear()
-    const startM  = meseNum(cx[2]), endM = meseNum(cx[4])
-    if (startM >= 0 && endM >= 0)
-      return dateRange({ d: parseInt(cx[1]), m: startM }, { d: parseInt(cx[3]), m: endM >= startM ? endM : endM + 12 }, anno)
+    const anno = cx[5] ? parseInt(cx[5]) : new Date().getFullYear()
+    const sm = meseNum(cx[2]), em = meseNum(cx[4])
+    if (sm >= 0 && em >= 0)
+      return dateRange({ d: parseInt(cx[1]), m: sm }, { d: parseInt(cx[3]), m: em >= sm ? em : em + 12 }, anno)
   }
-  // Range stesso mese con anno: "26-29 marzo 2026"
+  // Stesso mese con anno: "26-29 marzo 2026"
   const m = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)\s+(\d{4})/i)
   if (m && meseNum(m[3]) >= 0) {
     const mese = meseNum(m[3]), anno = parseInt(m[4])
-    const start = parseInt(m[1]), end = m[2] ? parseInt(m[2]) : start
-    return dateRange({ d: start, m: mese }, { d: end, m: mese }, anno)
+    return dateRange({ d: parseInt(m[1]), m: mese }, { d: m[2] ? parseInt(m[2]) : parseInt(m[1]), m: mese }, anno)
   }
   // Senza anno
   const m2 = rangeStr.match(/(\d+)(?:\s*[-–]\s*(\d+))?\s+(\w+)/i)
   if (m2 && meseNum(m2[3]) >= 0) {
     const mese = meseNum(m2[3]), anno = new Date().getFullYear()
-    const start = parseInt(m2[1]), end = m2[2] ? parseInt(m2[2]) : start
-    return dateRange({ d: start, m: mese }, { d: end, m: mese }, anno)
+    return dateRange({ d: parseInt(m2[1]), m: mese }, { d: m2[2] ? parseInt(m2[2]) : parseInt(m2[1]), m: mese }, anno)
   }
   return []
 }
@@ -167,21 +205,22 @@ function parseProgrammaFIN1(lines) {
   const RE_SESS  = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)(?:\s+(?:Mattino|Mattina|Pomeriggio))?$/i
 
   for (const line of lines) {
-    const mg = RE_GIORN.exec(line)
+    const firstCol = line.split('\t')[0]
+    const mg = RE_GIORN.exec(firstCol)
     if (mg) {
       curGiornata = { giornata: mg[1].trim(), data: mg[2].trim(), sessioni: [] }
       curSessione = null
       result.push(curGiornata)
       continue
     }
-    const ms = RE_SESS.exec(line)
+    const ms = RE_SESS.exec(firstCol)
     if (ms) {
       const nome = ms[1].charAt(0).toUpperCase() + ms[1].slice(1).toLowerCase()
       curSessione = { nome, gare: [] }
       if (curGiornata) curGiornata.sessioni.push(curSessione)
       continue
     }
-    const mc = RE_GARA.exec(line)
+    const mc = RE_GARA.exec(firstCol)
     if (mc && curSessione) {
       const tipo = mc[1].replace(/\s+/g, ' ').trim()
       if (/finali/i.test(tipo)) continue
@@ -189,17 +228,15 @@ function parseProgrammaFIN1(lines) {
       const spec   = normSpec(mc[4].trim())
       const sesso  = normSesso(mc[5])
       const catRaw = mc[6] || ''
-      const cat    = normCat(catRaw)
-      curSessione.gare.push({ tipo, dist, spec, sesso, cat, catRaw })
+      curSessione.gare.push({ tipo, dist, spec, sesso, cat: normCat(catRaw), catRaw })
       continue
     }
-    // Auto-sessione e fallback gara numerata
-    if (curGiornata && !curSessione && /^\d+\s*[.)]/.test(line)) {
+    if (curGiornata && !curSessione && /^\d+\s*[.)]/.test(firstCol)) {
       curSessione = { nome: 'Mattina', gare: [] }
       curGiornata.sessioni.push(curSessione)
     }
-    if (curSessione && /^\d+\s*[.)]/.test(line)) {
-      for (const part of splitEventsLine(line)) {
+    if (curSessione && /^\d+\s*[.)]/.test(firstCol)) {
+      for (const part of splitEventsLine(firstCol)) {
         const ev = parseNumberedEvent(part)
         if (ev) curSessione.gare.push({ tipo: 'Batterie', dist: ev.dist, spec: ev.spec, sesso: ev.sesso, cat: ev.cat, catRaw: ev.catRaw })
       }
@@ -209,13 +246,18 @@ function parseProgrammaFIN1(lines) {
 }
 
 // ── FIN2: "Sezione femminile/maschile" + "Giorno N" ──────────────────────────
-// Ogni sezione ha Giorno 1..N separati: NON si mergiano tra sezioni diverse.
 
 function isFormatoFIN2(lines) {
-  return lines.some(l =>
-    /^giorno\s+\d+/i.test(l) ||
-    /sezione\s+(femminile|maschile)/i.test(l)
-  )
+  return lines.some(l => {
+    const f = l.split('\t')[0]
+    return /^giorno\s+\d+/i.test(f) || /^sezione\s+(femminile|maschile)/i.test(f)
+  })
+}
+
+function ensureSession(giornata, nome) {
+  let s = giornata.sessioni.find(x => x.nome === nome)
+  if (!s) { s = { nome, gare: [] }; giornata.sessioni.push(s) }
+  return s
 }
 
 function parseProgrammaFIN2(lines) {
@@ -224,31 +266,25 @@ function parseProgrammaFIN2(lines) {
   let sectionDates = []
   let curGiornata  = null
   let curSessione  = null
-  let sectionId    = 0   // incrementa per ogni sezione: evita merge Giorno 1 F + Giorno 1 M
+  let sectionId    = 0
 
   const RE_SECTION = /^sezione\s+(femminile|maschile)\s*[:\-–]?\s*(.*)/i
   const RE_GIORNO  = /^giorno\s+(\d+)(?:\s*[:\-–]\s*(.+))?/i
 
   for (const line of lines) {
-    // Nuova sezione femminile/maschile
-    const ms = RE_SECTION.exec(line)
+    const firstCol = line.split('\t')[0]
+    const ms = RE_SECTION.exec(firstCol)
     if (ms) {
-      curSesso     = normSesso(ms[1])
-      sectionDates = expandDateRange(ms[2].trim())
-      curGiornata  = null
-      curSessione  = null
-      sectionId++
+      curSesso = normSesso(ms[1]); sectionDates = expandDateRange(ms[2].trim())
+      curGiornata = null; curSessione = null; sectionId++
       continue
     }
-
-    // Giorno N
-    const mg = RE_GIORNO.exec(line)
+    const mg = RE_GIORNO.exec(firstCol)
     if (mg) {
-      const n          = parseInt(mg[1])
-      const dataInline = mg[2]?.trim() || null
-      const data       = dataInline || sectionDates[n - 1] || null
-      const sKey       = `${sectionId}-${n}`  // chiave univoca per sezione+numero
-      const existing   = result.find(g => g._sKey === sKey)
+      const n = parseInt(mg[1])
+      const data = mg[2]?.trim() || sectionDates[n - 1] || null
+      const sKey = `${sectionId}-${n}`
+      const existing = result.find(g => g._sKey === sKey)
       if (existing) {
         curGiornata = existing
         if (data && !curGiornata.data) curGiornata.data = data
@@ -259,55 +295,34 @@ function parseProgrammaFIN2(lines) {
       curSessione = null
       continue
     }
-
-    // Sessione MATTINO/POMERIGGIO (anche "MATTINO POMERIGGIO" su stessa riga)
-    if (/mattino|mattina|pomeriggio/i.test(line) && !/\d/.test(line) && curGiornata) {
-      const nomeSess = /mattino|mattina/i.test(line) ? 'Mattino' : 'Pomeriggio'
-      curSessione = curGiornata.sessioni.find(s => s.nome === nomeSess)
-      if (!curSessione) {
-        curSessione = { nome: nomeSess, gare: [] }
-        curGiornata.sessioni.push(curSessione)
-      }
+    if (/mattino|mattina|pomeriggio/i.test(firstCol) && !/\d/.test(firstCol) && curGiornata) {
+      const nomeSess = /mattino|mattina/i.test(firstCol) ? 'Mattino' : 'Pomeriggio'
+      curSessione = ensureSession(curGiornata, nomeSess)
       continue
     }
-
-    // Gare numerate
-    if (/^\d+\s*[.)]/.test(line) && curGiornata) {
-      if (!curSessione) {
-        curSessione = { nome: 'Gare', gare: [] }
-        curGiornata.sessioni.push(curSessione)
+    if (/^\d+\s*[.)]/.test(firstCol) && curGiornata) {
+      if (!curSessione) { curSessione = { nome: 'Gare', gare: [] }; curGiornata.sessioni.push(curSessione) }
+      const cols = line.split('\t')
+      const parts0 = splitEventsLine(cols[0] || '')
+      const parts1 = cols.length > 1 ? splitEventsLine(cols[1] || '') : []
+      if (parts1.length > 0) {
+        // Due colonne: MATTINO | POMERIGGIO
+        const s0 = ensureSession(curGiornata, 'Mattino')
+        const s1 = ensureSession(curGiornata, 'Pomeriggio')
+        for (const p of parts0) { const ev = parseNumberedEvent(p); if (ev) s0.gare.push({ tipo:'Batterie', dist:ev.dist, spec:ev.spec, sesso:ev.sesso||curSesso, cat:ev.cat, catRaw:ev.catRaw }) }
+        for (const p of parts1) { const ev = parseNumberedEvent(p); if (ev) s1.gare.push({ tipo:'Batterie', dist:ev.dist, spec:ev.spec, sesso:ev.sesso||curSesso, cat:ev.cat, catRaw:ev.catRaw }) }
+      } else {
+        for (const p of parts0) { const ev = parseNumberedEvent(p); if (ev) curSessione.gare.push({ tipo:'Batterie', dist:ev.dist, spec:ev.spec, sesso:ev.sesso||curSesso, cat:ev.cat, catRaw:ev.catRaw }) }
       }
-      const parts = splitEventsLine(line)
-      // Se la riga ha 2 parti (MATTINO | POMERIGGIO), split su sessioni separate
-      let sess0 = curSessione
-      let sess1 = curSessione
-      if (parts.length >= 2) {
-        sess0 = ensureSession(curGiornata, 'Mattino')
-        sess1 = ensureSession(curGiornata, 'Pomeriggio')
-        curSessione = sess0
-      }
-      parts.forEach((part, i) => {
-        const ev = parseNumberedEvent(part)
-        if (!ev) return
-        const sesso = ev.sesso || curSesso
-        const sess  = parts.length >= 2 ? (i === 0 ? sess0 : sess1) : sess0
-        sess.gare.push({ tipo: 'Batterie', dist: ev.dist, spec: ev.spec, sesso, cat: ev.cat, catRaw: ev.catRaw })
-      })
     }
   }
   return result
 }
 
-function ensureSession(giornata, nome) {
-  let s = giornata.sessioni.find(x => x.nome === nome)
-  if (!s) { s = { nome, gare: [] }; giornata.sessioni.push(s) }
-  return s
-}
-
-// ── FIN3: "Batterie e Serie lente" + colonne "26 Giugno 27 Giugno ..." ───────
+// ── FIN3: "Batterie e Serie lente" + header colonne date ────────────────────
 
 function isFormatoFIN3(lines) {
-  const hasBatterie = lines.some(l => /^batterie\s+e\s+serie\s+lente/i.test(l))
+  const hasBatterie = lines.some(l => /^batterie\s+e\s+serie\s+lente/i.test(l.split('\t')[0]))
   const hasCols = lines.some(l => {
     const hits = [...l.matchAll(/(\d+)\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)/gi)]
     return hits.length >= 2
@@ -326,56 +341,116 @@ function parseProgrammaFIN3(lines) {
   const RE_FINALI   = /^finali/i
 
   for (const line of lines) {
-    if (RE_BATTERIE.test(line)) { inBatterie = true; continue }
-    if (RE_FINALI.test(line))   { inBatterie = false; continue }
+    const firstCol = line.split('\t')[0]
+    if (RE_BATTERIE.test(firstCol)) { inBatterie = true; continue }
+    if (RE_FINALI.test(firstCol))   { inBatterie = false; continue }
 
-    // Header colonne "26 Giugno 27 Giugno 28 Giugno"
     if (!headerDone) {
       const hits = [...line.matchAll(RE_DAY_COL)]
       if (hits.length >= 2) {
         headerDone = true
-        hits.forEach((h, i) => {
-          giorni.push({
-            giornata: String(i + 1),
-            data: `${h[1]} ${h[2]}`,
-            sessioni: [{ nome: 'Batterie', gare: [] }]
-          })
-        })
+        hits.forEach((h, i) => giorni.push({
+          giornata: String(i + 1), data: `${h[1]} ${h[2]}`,
+          sessioni: [{ nome: 'Batterie', gare: [] }]
+        }))
         continue
       }
     }
 
-    // Righe eventi (solo in sezione Batterie)
-    if (inBatterie && giorni.length > 0 && /^\d+\s*[.]/.test(line)) {
-      const parts = splitEventsLine(line)
-      if (dayStarts.length === 0 && parts.length === giorni.length) {
-        dayStarts = parts.map(p => parseInt((p.match(/^(\d+)/) || [])[1] || '0'))
+    if (inBatterie && giorni.length > 0 && /^\d+\s*[.]/.test(firstCol)) {
+      // Usa le colonne TAB per assegnare eventi ai giorni
+      const tabCols = line.split('\t')
+      if (dayStarts.length === 0 && tabCols.length === giorni.length) {
+        dayStarts = tabCols.map(c => parseInt((c.match(/^(\d+)/) || [])[1] || '0'))
       }
-      for (const part of parts) {
-        const ev = parseNumberedEvent(part)
-        if (!ev) continue
-        const evNum = parseInt((part.match(/^(\d+)/) || [])[1] || '0')
-        let dayIdx = 0
-        for (let i = dayStarts.length - 1; i >= 0; i--) {
-          if (evNum >= dayStarts[i]) { dayIdx = i; break }
+      tabCols.forEach((col, ci) => {
+        for (const part of splitEventsLine(col)) {
+          const ev = parseNumberedEvent(part)
+          if (!ev) continue
+          const evNum = parseInt((part.match(/^(\d+)/) || [])[1] || '0')
+          let dayIdx = ci < giorni.length ? ci : 0
+          if (dayStarts.length > 0) {
+            dayIdx = 0
+            for (let i = dayStarts.length - 1; i >= 0; i--)
+              if (evNum >= dayStarts[i]) { dayIdx = i; break }
+          }
+          if (giorni[dayIdx]?.sessioni[0])
+            giorni[dayIdx].sessioni[0].gare.push({ tipo:'Batterie', dist:ev.dist, spec:ev.spec, sesso:ev.sesso, cat:ev.cat, catRaw:ev.catRaw })
         }
-        if (giorni[dayIdx]?.sessioni[0]) {
-          giorni[dayIdx].sessioni[0].gare.push({
-            tipo: 'Batterie', dist: ev.dist, spec: ev.spec,
-            sesso: ev.sesso, cat: ev.cat, catRaw: ev.catRaw
-          })
-        }
-      }
+      })
     }
   }
   return giorni.filter(g => g.sessioni[0].gare.length > 0)
 }
 
+// ── FIN4: "Programma - gare" + "12 Dicembre a.m." + eventi senza numero ─────
+// Tabella multi-colonna con header "DD Mese a.m.|p.m." e righe "50 farfalla m"
+
+function isFormatoFIN4(lines) {
+  const hasProg = lines.some(l => /programma\s*[-–]\s*gare/i.test(l))
+  const hasAmPm = lines.some(l => /\b(a\.m\.|p\.m\.)/i.test(l) && MESI_IT.some(m => l.toLowerCase().includes(m)))
+  return hasProg && hasAmPm
+}
+
+function parseProgrammaFIN4(lines) {
+  const result   = []
+  let inProgramma = false
+  let curSessions = []   // sessioni (oggetti {gare:[]}) per le colonne correnti
+
+  const RE_PROGRAMMA = /programma\s*[-–]\s*gare/i
+  const RE_DAY_SESS  = /(\d+)\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+(a\.m\.|p\.m\.)/gi
+  const RE_EVENT     = /^(\d+(?:x\d+)?)\s+(stile\s+libero|farfalla|dorso|rana|misti|misto)\s+(m|f)/i
+
+  for (const line of lines) {
+    if (RE_PROGRAMMA.test(line)) { inProgramma = true; continue }
+    if (!inProgramma) continue
+
+    // Header colonne: "12 Dicembre a.m. [TAB] 13 Dicembre a.m."
+    const dayHits = [...line.matchAll(RE_DAY_SESS)]
+    if (dayHits.length > 0) {
+      curSessions = dayHits.map(h => {
+        const data = `${h[1]} ${h[2]}`
+        const nomeSess = /a\.m\./i.test(h[3]) ? 'Mattino' : 'Pomeriggio'
+        let g = result.find(x => x.data === data)
+        if (!g) {
+          g = { giornata: String(result.length + 1), data, sessioni: [] }
+          result.push(g)
+        }
+        return ensureSession(g, nomeSess)
+      })
+      continue
+    }
+
+    // Righe eventi (tab-separate per colonne)
+    if (curSessions.length > 0) {
+      const tabCols = line.split('\t')
+      tabCols.forEach((col, ci) => {
+        const ev = parseUnnumberedEvent(col.trim())
+        if (!ev || ci >= curSessions.length) return
+        curSessions[ci].gare.push({ tipo:'Batterie', dist:ev.dist, spec:ev.spec, sesso:ev.sesso, cat:null, catRaw:'' })
+      })
+    }
+  }
+
+  // Ordina giornate per data
+  result.sort((a, b) => {
+    const da = new Date(a.data.replace(/(\d+)\s+(\w+)\s+(\d+)/, '$3-$2-$1').replace(/\w+/, m => {
+      const i = MESI_IT.indexOf(m.toLowerCase()); return i >= 0 ? String(i+1).padStart(2,'0') : '01'
+    }))
+    const db = new Date(b.data.replace(/(\d+)\s+(\w+)\s+(\d+)/, '$3-$2-$1').replace(/\w+/, m => {
+      const i = MESI_IT.indexOf(m.toLowerCase()); return i >= 0 ? String(i+1).padStart(2,'0') : '01'
+    }))
+    return da - db
+  })
+  return result
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
 export function parseProgramma(text) {
-  const lines = text.split(/[\n\r]+/).map(l => normalizeLine(l.trim())).filter(Boolean)
+  const lines = text.split(/[\n\r]+/).map(l => normalizeLine(l)).filter(l => l.replace(/\t/g,'').trim())
   if (isFormatoFIN3(lines)) return parseProgrammaFIN3(lines)
+  if (isFormatoFIN4(lines)) return parseProgrammaFIN4(lines)
   const fin1 = parseProgrammaFIN1(lines)
   if (fin1.length > 0) return fin1
   if (isFormatoFIN2(lines)) return parseProgrammaFIN2(lines)
@@ -396,8 +471,7 @@ export function parseGraduatoriaLimiti(text) {
     if (RE_HDR.test(line)) continue
     const m = RE_ROW.exec(line)
     if (m) {
-      const dist = parseInt(m[1])
-      const spec = normSpec(m[2])
+      const dist = parseInt(m[1]), spec = normSpec(m[2])
       const nums = m[3].trim().split(/\s+/).map(Number)
       if (nums[0] !== undefined) limiti[`${dist}|${spec}|Female`] = nums[0]
       if (nums[1] !== undefined) limiti[`${dist}|${spec}|Male`]   = nums[1]
