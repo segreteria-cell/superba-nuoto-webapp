@@ -426,14 +426,14 @@ async function pdfToLines(arrayBuffer, onProgress) {
       }
     }
 
-    const seen = new Set()
+    // NOTA: non deduplicare righe dentro la pagina — più atleti dello stesso
+    // anno+società producono righe identiche (es. "2010 ITA Superba Nuoto ssd")
+    // e la dedup farebbe sparire le righe di società per tutti tranne il primo.
+    // I duplicati reali a livello di risultato vengono eliminati da seenRows.
     for (const row of rows) {
       row.items.sort((a, b) => a.transform[4] - b.transform[4])
       const text = normSpace(row.items.map(i => i.str).join(' '))
       if (!text) continue
-      const key = normSoft(text)
-      if (seen.has(key)) continue
-      seen.add(key)
       allLines.push(text)
     }
   }
