@@ -473,7 +473,7 @@ export async function extractPDF({
 
     if (/^\s*Risultati\s*$/i.test(line)) { inResultsMode = true; continue }
     if (/\bProgramma\s+gare\b/i.test(line)) {
-      inResultsMode = false; current = null; attesaNuovaGara = true; currentPhase = ''; continue
+      inResultsMode = false; current = null; attesaNuovaGara = true; currentPhase = ''; inResultsMode = true; continue
     }
 
     for (const [phase, rx] of PHASE_RULES) {
@@ -484,7 +484,7 @@ export async function extractPDF({
     if (dHere) lastDate = dHere
 
     if (RE_PUBBLICATA.test(line)) {
-      current = null; attesaNuovaGara = true; currentPhase = ''
+      current = null; attesaNuovaGara = true; currentPhase = ''; inResultsMode = true
       continue
     }
 
