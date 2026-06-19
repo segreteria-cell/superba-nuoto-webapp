@@ -210,8 +210,9 @@ export default function Regolamenti() {
       if (!base64) { setError('File non trovato.'); return }
       const text   = await extractPdfText(base64)
       let   giorni = parseProgramma(text)
-      if (giorni.length === 0 && import.meta.env.VITE_ANTHROPIC_KEY) {
-        console.log('[Vision] parser testuale: 0 giornate, uso Claude vision...')
+      const totGare = giorni.reduce((s, g) => s + g.sessioni.reduce((s2, sess) => s2 + sess.gare.length, 0), 0)
+      if (totGare === 0 && import.meta.env.VITE_ANTHROPIC_KEY) {
+        console.log('[Vision] parser testuale: 0 gare, uso Claude vision...')
         giorni = await parseProgrammaVision(base64)
       }
       setProgramma({ id: item.id, nome: item.nome, giorni, rawText: text }); setProgGiornata(0); setShowRaw(false)

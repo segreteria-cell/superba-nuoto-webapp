@@ -55,27 +55,16 @@ export async function extractPdfText(base64) {
   for (let p = 1; p <= pdf.numPages; p++) {
     const page    = await pdf.getPage(p)
     const content = await page.getTextContent()
-    // Raggruppa per y-position, mantieni x e width
     const byY = {}
     for (const item of content.items) {
       if (!item.str.trim()) continue
       const y = Math.round(item.transform[5])
       if (!byY[y]) byY[y] = []
-      byY[y].push({ str: item.str, x: item.transform[4], w: item.width || 0 })
+      byY[y].push(item.str)
     }
     const sortedY = Object.keys(byY).map(Number).sort((a, b) => b - a)
     for (const y of sortedY) {
-      const items = byY[y].sort((a, b) => a.x - b.x)
-      let line = ''; let prevEndX = null
-      for (const item of items) {
-        if (prevEndX !== null) {
-          const gap = item.x - prevEndX
-          line += gap > 20 ? '\t' : ' '   // TAB = separatore di colonna
-        }
-        line += item.str
-        prevEndX = item.x + (item.w > 0 ? item.w : item.str.length * 5.5)
-      }
-      text += line + '\n'
+      text += byY[y].join(' ') + '\n'
     }
   }
   console.log('[PDF] testo estratto (prime 500 chars):', text.slice(0, 500))
@@ -115,7 +104,7 @@ function normalizeCol(col) {
 }
 
 function normalizeLine(line) {
-  return line.split('\t').map(normalizeCol).join('\t')
+  return normalizeCol(line)
 }
 
 // ── utilita' condivise ────────────────────────────────────────────────────────
@@ -568,12 +557,6 @@ export function parseGraduatoriaLimiti(text) {
       if (nums[1] !== undefined) limiti[dist+'|'+spec+'|Male']   = nums[1]
       if (nums[2] !== undefined && nums[2] > (limiti[dist+'|'+spec+'|Male'] || 0))
         limiti[dist+'|'+spec+'|Male'] = nums[2]
-    }
-  }
-  return limiti
-}
-== undefined && nums[2] > (limiti[`${dist}|${spec}|Male`] || 0))
-        limiti[`${dist}|${spec}|Male`] = nums[2]
     }
   }
   return limiti
