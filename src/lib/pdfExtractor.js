@@ -45,13 +45,13 @@ const DIST_OK = new Set([50, 100, 200, 400, 800, 1500])
 function normSpace(s) {
   return (s || '')
     .replace(/\xa0/g, ' ').replace(/[–—]/g, '-')
-    .replace(/['`]/g, "'")
+    .replace(/’|‘|`/g, "'")
     .replace(/\s+/g, ' ').trim()
 }
 
 function normSoft(s) {
   return (s || '').toLowerCase()
-    .replace(/\xa0/g, ' ').replace(/['`]/g, "'")
+    .replace(/\xa0/g, ' ').replace(/’|‘|`/g, "'")
     .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
@@ -384,8 +384,10 @@ function collectSplitsFromBelow(allLines, idx, lastDate) {
 // usa coordinate TOP (dall'alto). Le due righe "atleta" e "anno/club" hanno
 // baseline quasi identica (~0.05pt di diff) ma top diversa (~0.91pt di diff).
 // Formula corretta: topFromTop = pageHeight - transform[5] - item.height
-// Con Y_TOL=0.7pt (< 0.91) si separano esattamente come fa pdfplumber con 0.6pt.
-const Y_TOL = 0.7
+// Con Y_TOL=0.6pt si separano sia il caso 25m (diff 0.91) sia il caso 50m (diff 0.64 split/atleta).
+// FIX: abbassato da 0.7 a 0.6 per separare correttamente il tempo di seconda vasca (0.64pt)
+// dalla riga atleta nei PDF a vasca 50m (es. Meeting Loano).
+const Y_TOL = 0.6
 
 async function pdfToLines(arrayBuffer, onProgress) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
@@ -394,22 +396,19 @@ async function pdfToLines(arrayBuffer, onProgress) {
   for (let p = 1; p <= pdf.numPages; p++) {
     if (onProgress) onProgress(p, pdf.numPages)
     const page = await pdf.getPage(p)
-    const pageHeight = page.view[3]  // altezza pagina in punti (es. 842)
+    const pageHeight = page.view[3]
     const content = await page.getTextContent()
 
-    // Calcola topFromTop = coordinata TOP dall'alto (come pdfplumber)
     const items = content.items
-      .filter(item => item.str?.trim())
+      .filter(item => item.str && item.str.trim())
       .map(item => ({
         ...item,
         topFromTop: pageHeight - item.transform[5] - (item.height || Math.abs(item.transform[3])),
       }))
     if (!items.length) continue
 
-    // Ordina top→bottom (topFromTop crescente = inizio pagina prima)
     items.sort((a, b) => a.topFromTop - b.topFromTop)
 
-    // Sliding window: se item è più di Y_TOL sotto la riga corrente → nuova riga
     const rows = []
     let curRow = null
     for (const item of items) {
@@ -427,7 +426,7 @@ async function pdfToLines(arrayBuffer, onProgress) {
 
     const seen = new Set()
     for (const row of rows) {
-      row.items.sort((a, b) => a.transform[4] - b.transform[4])  // sinistra→destra
+      row.items.sort((a, b) => a.transform[4] - b.transform[4])
       const text = normSpace(row.items.map(i => i.str).join(' '))
       if (!text) continue
       const key = normSoft(text)
@@ -449,7 +448,7 @@ export async function extractPDF({
   onProgress,
 }) {
   const log = msg => { if (onLog) onLog(msg) }
-  log('▶ Estrazione: ' + filename)
+  log('Estrazione: ' + filename)
 
   const allLines = await pdfToLines(arrayBuffer, (p, tot) => {
     log('  Pagina ' + p + '/' + tot)
@@ -465,22 +464,25 @@ export async function extractPDF({
   let lastDate = ''
   let currentPhase = ''
   let attesaNuovaGara = false
+  let inResultsMode = false
 
   for (let idx = 0; idx < allLines.length; idx++) {
     const line = allLines[idx]
     const prev = idx > 0 ? allLines[idx - 1] : ''
     const next = idx + 1 < allLines.length ? allLines[idx + 1] : ''
 
-    // Fase
+    if (/^\s*Risultati\s*$/i.test(line)) { inResultsMode = true; continue }
+    if (/\bProgramma\s+gare\b/i.test(line)) {
+      inResultsMode = false; current = null; attesaNuovaGara = true; currentPhase = ''; continue
+    }
+
     for (const [phase, rx] of PHASE_RULES) {
       if (rx.test(line)) { currentPhase = phase; break }
     }
 
-    // Data
     const dHere = findDateAnywhere(line)
     if (dHere) lastDate = dHere
 
-    // Pubblicata
     if (RE_PUBBLICATA.test(line)) {
       current = null; attesaNuovaGara = true; currentPhase = ''
       continue
@@ -488,7 +490,6 @@ export async function extractPDF({
 
     const athleteParsed = parseAthleteLine(line)
 
-    // Header gara
     const hdr = parseHeaderSliding(prev, line, next, lastDate)
     if (hdr) {
       current = hdr
@@ -500,15 +501,11 @@ export async function extractPDF({
 
     if ((attesaNuovaGara && !current) || !current) continue
     if (!athleteParsed) continue
+    if (!inResultsMode) continue
 
     const { pos, atleta, times: cumul } = athleteParsed
     const dist = current.dist
-    let okSoc
-    if (splitBase === 25 && [200, 400, 800, 1500].includes(dist)) {
-      okSoc = matchSocietaSplit25Under(allLines, idx)
-    } else {
-      okSoc = matchSocietaGeneral(allLines, idx)
-    }
+    const okSoc = matchSocietaSplit25Under(allLines, idx)
     if (!okSoc) continue
 
     let finalCumul = [...cumul]
@@ -538,7 +535,8 @@ export async function extractPDF({
     let [parziali, tempoFinale] = pickBySplitBase(dist, finalCumul, splitBase, maxParziali)
     if (dist === 1500 && finaleOverride) tempoFinale = finaleOverride
 
-    const dedupKey = current.gara + '|' + (current.data_gara || '') + '|' + atleta + '|' + currentPhase
+    // FIX: include tempoFinale nel dedupKey per distinguere batterie da finali
+    const dedupKey = current.gara + '|' + (current.data_gara || '') + '|' + atleta + '|' + currentPhase + '|' + (tempoFinale || '')
     if (seenRows.has(dedupKey)) continue
     seenRows.add(dedupKey)
 
@@ -557,6 +555,6 @@ export async function extractPDF({
     rows.push(row)
   }
 
-  log('✓ Estratti: ' + rows.length + ' risultati')
+  log('Estratti: ' + rows.length + ' risultati')
   return rows
 }
