@@ -558,6 +558,10 @@ export async function extractPDF({
     rows.push(row)
   }
 
+  // Log per gara
+  const byGara = {}
+  rows.forEach(r => { byGara[r.gara] = (byGara[r.gara] || 0) + 1 })
+  Object.keys(byGara).sort().forEach(g => log('  ' + g + ': ' + byGara[g]))
   log('Estratti: ' + rows.length + ' risultati')
   return rows
 }
