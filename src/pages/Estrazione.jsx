@@ -138,6 +138,7 @@ export default function Estrazione() {
   const [log, setLog]           = useState([])
   const [progress, setProgress] = useState({ cur: 0, tot: 0 })
   const [showAtletiModal, setShowAtletiModal] = useState(false)
+  const [showLog, setShowLog] = useState(false)
   const fileRef   = useRef()
   const logEndRef = useRef()
 
@@ -341,8 +342,8 @@ export default function Estrazione() {
                   ✓ {savedCount} righe su Firebase
                 </span>
               )}
-              <button onClick={() => setLog(l => l.length ? [] : log)}
-                className="px-3 py-2 border border-sb-sep text-xs font-medium text-sb-muted rounded-lg hover:bg-sb-bg">
+              <button onClick={() => setShowLog(v => !v)}
+                className={"px-3 py-2 border border-sb-sep text-xs font-medium rounded-lg hover:bg-sb-bg " + (showLog ? 'text-sb-blue border-sb-blue' : 'text-sb-muted')}>
                 📋 Log
               </button>
               <button onClick={downloadCSV}
@@ -358,6 +359,23 @@ export default function Estrazione() {
                 Svuota
               </button>
             </div>
+            {/* Breakdown per gara */}
+            {(() => {
+              const byGara = {}
+              rows.forEach(r => { byGara[r.gara] = (byGara[r.gara] || 0) + 1 })
+              const sorted = Object.keys(byGara).sort()
+              if (!sorted.length) return null
+              return (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {sorted.map(g => (
+                    <span key={g} className="text-[11px] font-mono bg-sb-bg border border-sb-sep rounded px-2 py-0.5 text-sb-text">
+                      <span className="font-bold text-sb-blue">{g}</span>
+                      <span className="text-sb-muted ml-1">{byGara[g]}</span>
+                    </span>
+                  ))}
+                </div>
+              )
+            })()}
             <div className="grid grid-cols-3 gap-3">
               <StatChip label="Risultati" value={rows.length} color="text-sb-blue" />
               <StatChip
@@ -372,7 +390,7 @@ export default function Estrazione() {
           </div>
 
           {/* Log toggle */}
-          {log.length > 0 && (
+          {showLog && log.length > 0 && (
             <div className="bg-sb-panel rounded-xl border border-sb-sep overflow-auto font-mono text-xs p-3 space-y-0.5" style={{ maxHeight: '180px' }}>
               {log.map(entry => (
                 <p key={entry.id} className={TAG_COLORS[entry.tag] ?? 'text-sb-muted'}>{entry.msg}</p>
