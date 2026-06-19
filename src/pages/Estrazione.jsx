@@ -3,14 +3,10 @@ import { extractPDF } from '../lib/pdfExtractor'
 import { db } from '../lib/firebase'
 import { collection, doc, writeBatch, getDocs } from 'firebase/firestore'
 
-// Colonne chiave sempre visibili nella tabella interna
 const COLS_KEY = ['gara', 'sesso', 'data_gara', 'posizione', 'atleta', 'societa', 'tempo_finale']
 const isParziale = c => /^\d+m$/.test(String(c || ''))
-
-// Colonne parziali template (50m, 100m, ... 1500m)
 const SPLIT_COLS = Array.from({ length: 30 }, (_, i) => ((i + 1) * 50) + 'm')
 
-// Mappa campo interno → nome colonna template Excel
 const COL_MAP = {
   data_gara:    'DATA',
   sesso:        'SESSO',
@@ -21,7 +17,6 @@ const COL_MAP = {
   tempo_finale: 'TEMPO',
 }
 
-// Tutte le colonne del template nell'ordine corretto
 const TEMPLATE_COLS = [
   'DATA','LUOGO','VASCA','CATEG','SESSO','AGEGROUP','GARA',
   'POS.T','BATT','CORSIA','POS.B','CODICE','ATLETA/SQUADRA','Staf',
@@ -33,22 +28,24 @@ const TEMPLATE_COLS = [
 function rowsToCSV(rows) {
   if (!rows.length) return ''
   const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"'
-  // Inverti la mappa per lookup veloce
   const inv = Object.fromEntries(Object.entries(COL_MAP).map(([k,v]) => [v, k]))
   const lines = rows.map(r => {
     return TEMPLATE_COLS.map(col => {
-      const internalKey = inv[col] || col  // prova la mappa inversa, poi il nome diretto
+      const internalKey = inv[col] || col
       return esc(r[internalKey] ?? '')
     }).join(';')
   })
   return [TEMPLATE_COLS.join(';'), ...lines].join('\n')
 }
 
-function StatChip({ label, value, color = 'text-sb-blue' }) {
+function StatChip({ label, value, color = 'text-sb-blue', onClick, subtitle }) {
+  const base = 'bg-sb-bg rounded-xl px-4 py-3 text-center min-w-20'
+  const extra = onClick ? ' cursor-pointer hover:ring-2 hover:ring-sb-aqua transition-all select-none' : ''
   return (
-    <div className="bg-sb-bg rounded-xl px-4 py-3 text-center min-w-20">
+    <div className={base + extra} onClick={onClick}>
       <p className={'text-2xl font-bold ' + color}>{value}</p>
       <p className="text-xs text-sb-muted mt-0.5">{label}</p>
+      {subtitle && <p className="text-[10px] text-sb-aqua mt-0.5">{subtitle}</p>}
     </div>
   )
 }
@@ -59,6 +56,72 @@ const TAG_COLORS = {
   warn: 'text-yellow-400',
   info: 'text-blue-300',
   head: 'text-white font-bold',
+}
+
+function AtletiModal({ rows, onClose }) {
+  const atletiMF = rows.reduce((acc, r) => {
+    if (!r.atleta) return acc
+    const s = r.sesso || '?'
+    if (!acc[s]) acc[s] = new Set()
+    acc[s].add(r.atleta)
+    return acc
+  }, {})
+
+  const gruppi = ['M', 'F', '?'].map(s => ({
+    sesso: s,
+    label: s === 'M' ? '♂ Maschile' : s === 'F' ? '♀ Femminile' : '? Sconosciuto',
+    lista: [...(atletiMF[s] || new Set())].sort(),
+  })).filter(g => g.lista.length > 0)
+
+  const totale = gruppi.reduce((n, g) => n + g.lista.length, 0)
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl w-full max-w-2xl flex flex-col"
+        style={{ maxHeight: '80vh' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-sb-sep">
+          <div>
+            <p className="font-bold text-sb-text text-base">Atleti estratti</p>
+            <p className="text-xs text-sb-muted mt-0.5">{totale} atleti unici</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-sb-muted hover:text-sb-text text-xl leading-none px-2"
+          >✕</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {gruppi.map(({ sesso, label, lista }) => (
+              <div key={sesso}>
+                <p className="text-xs font-bold text-sb-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                  {label}
+                  <span className="bg-sb-bg text-sb-aqua font-bold rounded-full px-2 py-0.5 text-[10px]">
+                    {lista.length}
+                  </span>
+                </p>
+                <ul className="space-y-0">
+                  {lista.map(a => (
+                    <li key={a} className="text-sm text-sb-text py-1 border-b border-sb-sep/40 last:border-0">
+                      {a}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function Estrazione() {
@@ -74,6 +137,7 @@ export default function Estrazione() {
   const [extracting, setExtracting] = useState(false)
   const [log, setLog]           = useState([])
   const [progress, setProgress] = useState({ cur: 0, tot: 0 })
+  const [showAtletiModal, setShowAtletiModal] = useState(false)
   const fileRef   = useRef()
   const logEndRef = useRef()
 
@@ -111,7 +175,6 @@ export default function Estrazione() {
         addLog('Nessun risultato estratto. Verifica che il PDF contenga "Superba Nuoto" come testo selezionabile.', 'warn')
       }
       setRows(extracted)
-      // Raccogli TUTTE le colonne da tutti i risultati (non solo il primo)
       if (extracted.length) {
         const allKeys = new Set()
         extracted.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)))
@@ -145,8 +208,11 @@ export default function Estrazione() {
         && (!s || (r.societa|| '').toLowerCase().includes(s))
   })
 
-  const uniqueAtleti  = [...new Set(rows.map(r => r.atleta).filter(Boolean))].length
-  const uniqueGare    = [...new Set(rows.map(r => r.gara).filter(Boolean))].length
+  const uniqueAtleti = [...new Set(rows.map(r => r.atleta).filter(Boolean))].length
+  const uniqueGare   = [...new Set(rows.map(r => r.gara).filter(Boolean))].length
+
+  const atletiM = [...new Set(rows.filter(r => r.sesso === 'M').map(r => r.atleta).filter(Boolean))].length
+  const atletiF = [...new Set(rows.filter(r => r.sesso === 'F').map(r => r.atleta).filter(Boolean))].length
 
   async function saveToFirebase() {
     if (!rows.length) return
@@ -196,7 +262,6 @@ export default function Estrazione() {
             </p>
           </div>
 
-          {/* Stagione */}
           <div>
             <label className="block text-xs text-sb-muted font-medium mb-1">Stagione</label>
             <select value={stagione} onChange={e => setStagione(e.target.value)}
@@ -205,7 +270,6 @@ export default function Estrazione() {
             </select>
           </div>
 
-          {/* Split base */}
           <div>
             <label className="block text-xs text-sb-muted font-medium mb-1">Parziali ogni</label>
             <select value={splitBase} onChange={e => setSplitBase(Number(e.target.value))}
@@ -224,7 +288,7 @@ export default function Estrazione() {
         </div>
       </div>
 
-      {/* Drop zone (solo se niente caricato e non in estrazione) */}
+      {/* Drop zone */}
       {rows.length === 0 && !extracting && log.length === 0 && (
         <div
           onDragOver={e => { e.preventDefault(); setDragging(true) }}
@@ -295,9 +359,15 @@ export default function Estrazione() {
               </button>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <StatChip label="Risultati" value={rows.length}   color="text-sb-blue" />
-              <StatChip label="Atleti"    value={uniqueAtleti}  color="text-sb-aqua" />
-              <StatChip label="Gare"      value={uniqueGare}    color="text-sb-green" />
+              <StatChip label="Risultati" value={rows.length} color="text-sb-blue" />
+              <StatChip
+                label="Atleti"
+                value={uniqueAtleti}
+                color="text-sb-aqua"
+                subtitle={atletiM && atletiF ? `♂ ${atletiM}  ♀ ${atletiF}` : undefined}
+                onClick={() => setShowAtletiModal(true)}
+              />
+              <StatChip label="Gare" value={uniqueGare} color="text-sb-green" />
             </div>
           </div>
 
@@ -349,7 +419,7 @@ export default function Estrazione() {
                   <tr key={i} className={'border-b border-sb-sep/50 ' + (i % 2 === 0 ? 'bg-white' : 'bg-sb-panel')}>
                     {keyCols.map(c => (
                       <td key={c} className="px-3 py-1.5 whitespace-nowrap">
-                        {c === 'posizione'   ? <span className="font-bold text-sb-blue">{r[c]}</span>
+                        {c === 'posizione'    ? <span className="font-bold text-sb-blue">{r[c]}</span>
                         : c === 'tempo_finale' ? <span className="font-mono font-semibold text-sb-text">{r[c]}</span>
                         : c === 'atleta'      ? <span className="font-medium text-sb-text">{r[c]}</span>
                         : c === 'gara'        ? <span className="text-xs font-bold bg-sb-bg px-2 py-0.5 rounded text-sb-blue">{r[c]}</span>
@@ -375,7 +445,12 @@ export default function Estrazione() {
             </table>
           </div>
         </>
-          )}
-  </div>
-)
+      )}
+
+      {/* Modal atleti */}
+      {showAtletiModal && (
+        <AtletiModal rows={rows} onClose={() => setShowAtletiModal(false)} />
+      )}
+    </div>
+  )
 }

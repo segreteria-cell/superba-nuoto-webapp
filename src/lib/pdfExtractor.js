@@ -535,8 +535,9 @@ export async function extractPDF({
     let [parziali, tempoFinale] = pickBySplitBase(dist, finalCumul, splitBase, maxParziali)
     if (dist === 1500 && finaleOverride) tempoFinale = finaleOverride
 
-    // FIX: include tempoFinale nel dedupKey per distinguere batterie da finali
-    const dedupKey = current.gara + '|' + (current.data_gara || '') + '|' + atleta + '|' + currentPhase + '|' + (tempoFinale || '')
+    // FIX dedup: normalizza BATTERIE/ELIMINATORIE come stessa fase; distingue solo FINALI vs resto
+    const faseKey = /\bfinal[ie]\b/i.test(currentPhase || '') ? 'FINALI' : 'HEATS'
+    const dedupKey = current.gara + '|' + (current.data_gara || '') + '|' + atleta + '|' + faseKey + '|' + (tempoFinale || '')
     if (seenRows.has(dedupKey)) continue
     seenRows.add(dedupKey)
 
