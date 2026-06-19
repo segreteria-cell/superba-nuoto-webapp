@@ -6,6 +6,7 @@
  */
 
 import * as pdfjsLib from 'pdfjs-dist'
+import ATLETI_SUPERBA from './atletiSuperba.json'
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 
@@ -53,6 +54,67 @@ function normSoft(s) {
   return (s || '').toLowerCase()
     .replace(/\xa0/g, ' ').replace(/’|‘|`/g, "'")
     .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+// ─── Atleti ufficiali (ElencoAtleti.xlsx) ────────────────────────────────────
+function normAtleta(s) {
+  return (s || '').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+}
+
+// Costruisce indice per cognome (primo token) per velocità
+const _atletiIdx = (() => {
+  const idx = {}
+  for (const a of ATLETI_SUPERBA) {
+    const norm = normAtleta(a.name)
+    const tok = norm.split(' ')[0]
+    if (!idx[tok]) idx[tok] = []
+    idx[tok].push({ ...a, _norm: norm, _tokens: norm.split(' ') })
+  }
+  return idx
+})()
+
+/**
+ * Cerca il nome ufficiale nell'elenco atleti Superba.
+ * @returns { name, sesso } oppure null se non trovato.
+ */
+function findAtletaUfficiale(pdfName) {
+  const pdfNorm = normAtleta(pdfName)
+  const pdfTokens = pdfNorm.split(' ').filter(Boolean)
+  if (!pdfTokens.length) return null
+
+  const cogn = pdfTokens[0]
+
+  // Cerca candidati per cognome (primo token, ammessa differenza di 1 char)
+  const candidati = []
+  for (const [key, list] of Object.entries(_atletiIdx)) {
+    // Match esatto o il cognome PDF è prefisso di quello ufficiale (o viceversa)
+    if (key === cogn || key.startsWith(cogn) || cogn.startsWith(key)) {
+      candidati.push(...list)
+    }
+  }
+  if (!candidati.length) return null
+
+  let best = null
+  let bestScore = -1
+
+  for (const a of candidati) {
+    const offTokens = a._tokens
+    // Conta quanti token PDF hanno una corrispondenza (esatta o prefisso) in ufficiale
+    let matched = 0
+    for (const pt of pdfTokens) {
+      if (!pt) continue
+      for (const ot of offTokens) {
+        if (ot === pt || ot.startsWith(pt) || pt.startsWith(ot)) { matched++; break }
+      }
+    }
+    const score = matched / pdfTokens.length
+    if (score > bestScore) { bestScore = score; best = a }
+  }
+
+  return bestScore >= 0.7 ? best : null
 }
 
 function extractTimes(line) {
@@ -505,10 +567,15 @@ export async function extractPDF({
     if (!athleteParsed) continue
     if (!inResultsMode) continue
 
-    const { pos, atleta, times: cumul } = athleteParsed
+    const { pos, atleta: atletaPdf, times: cumul } = athleteParsed
     const dist = current.dist
     const okSoc = matchSocietaSplit25Under(allLines, idx)
     if (!okSoc) continue
+
+    // Valida e normalizza il nome tramite ElencoAtleti.xlsx
+    const atletaUff = findAtletaUfficiale(atletaPdf)
+    if (!atletaUff) continue          // non è un atleta Superba → falso positivo
+    const atleta = atletaUff.name     // nome ufficiale normalizzato
 
     let finalCumul = [...cumul]
     let finaleOverride = ''
