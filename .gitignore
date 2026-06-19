@@ -1,6 +1,6 @@
-node_modules 
-dist 
-.env.local 
+node_modules
+dist
 .env.local
-"*.TXT" 
-"CHIAVE API.TXT" 
+*.TXT
+CHIAVE API.TXT
+vite.config.js.timestamp-*.mjs
