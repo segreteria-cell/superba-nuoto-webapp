@@ -248,6 +248,8 @@ function matchSocietaGeneral(allLines, idx) {
 }
 
 function matchSocietaSplit25Under(allLines, idx) {
+  // Società inline nella riga atleta (layout a colonne PDF)
+  if (societaTokensMatch(allLines[idx])) return true
   const collected = []
   for (let k = 1; k <= 4; k++) {
     const j = idx + k
