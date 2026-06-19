@@ -211,7 +211,7 @@ export default function Regolamenti() {
       const text   = await extractPdfText(base64)
       let   giorni = parseProgramma(text)
       const totGare = giorni.reduce((s, g) => s + g.sessioni.reduce((s2, sess) => s2 + sess.gare.length, 0), 0)
-      if (totGare === 0 && import.meta.env.VITE_ANTHROPIC_KEY) {
+      if (totGare < 10 && import.meta.env.VITE_ANTHROPIC_KEY) {
         console.log('[Vision] parser testuale: 0 gare, uso Claude vision...')
         giorni = await parseProgrammaVision(base64)
       }

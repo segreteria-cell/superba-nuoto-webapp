@@ -5,7 +5,7 @@ import XLSXStyle from 'xlsx-js-style'
 import { ref as rtdbRef, set as rtdbSet, get as rtdbGet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
 import { ELENCO_ATLETI } from '../lib/elencoAtleti'
-import { extractPdfText, parseProgramma, parseGraduatoriaLimiti } from '../lib/parseProgramma'
+import { extractPdfText, parseProgramma, parseProgrammaVision, parseGraduatoriaLimiti } from '../lib/parseProgramma'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -852,7 +852,13 @@ export default function Qualifiche() {
       if (!base64) return
       try {
         const text = await extractPdfText(base64)
-        setProgramma(parseProgramma(text))
+        let giorni = parseProgramma(text)
+        const totGare = giorni.reduce((s, g) => s + g.sessioni.reduce((s2, sess) => s2 + sess.gare.length, 0), 0)
+        if (totGare < 10 && import.meta.env.VITE_ANTHROPIC_KEY) {
+          console.log('[Vision] parser testuale: poche gare, uso Claude vision...')
+          giorni = await parseProgrammaVision(base64)
+        }
+        setProgramma(giorni)
         setGraduatoriaLimiti(parseGraduatoriaLimiti(text))
       } catch (e) { console.warn('Errore parsing PDF:', e) }
     }).catch(e => console.warn('Errore caricamento PDF:', e))
