@@ -174,11 +174,11 @@ export default function Estrazione() {
 
     try {
       const buf = await file.arrayBuffer()
-      // pdfjs trasferisce (detach) il buffer al worker — passiamo una copia alla detection
+      
 
       // ── Auto-detect formato ──────────────────────────────────────────────
       addLog('Rilevamento formato PDF…')
-      const fmt = await detectFormat(buf.slice(0))
+      const fmt = detectFormat(buf)
       setFormat(fmt)
       addLog(
         fmt === 'FIN'
