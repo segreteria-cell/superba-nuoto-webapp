@@ -1,8 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { extractPDF }    from '../lib/pdfExtractor'
 import { extractPDFFIN, detectFormat } from '../lib/pdfExtractorFIN'
-import { db } from '../lib/firebase'
-import { collection, doc, writeBatch, getDocs } from 'firebase/firestore'
 
 const COLS_KEY_FICR = ['gara', 'sesso', 'data_gara', 'posizione', 'atleta', 'societa', 'tempo_finale']
 const COLS_KEY_FIN  = ['gara', 'sesso', 'categoria', 'anno', 'posizione', 'stato', 'atleta', 'societa', 'tempo_finale']
@@ -143,8 +141,6 @@ export default function Estrazione() {
   const [stagione, setStagione] = useState('2025/2026')
   const [splitBase, setSplitBase] = useState(50)
   const [filter, setFilter]     = useState({ atleta: '', gara: '', societa: '' })
-  const [saving, setSaving]     = useState(false)
-  const [savedCount, setSaved]  = useState(null)
   const [dragging, setDragging] = useState(false)
   const [extracting, setExtracting] = useState(false)
   const [log, setLog]           = useState([])
@@ -166,7 +162,6 @@ export default function Estrazione() {
       addLog('Seleziona un file PDF.', 'warn'); return
     }
     setExtracting(true)
-    setSaved(null)
     setLog([])
     setRows([])
     setFormat(null)
@@ -271,29 +266,6 @@ export default function Estrazione() {
   const atletiM = [...new Set(rows.filter(r => r.sesso === 'M').map(r => r.atleta).filter(Boolean))].length
   const atletiF = [...new Set(rows.filter(r => r.sesso === 'F').map(r => r.atleta).filter(Boolean))].length
 
-  async function saveToFirebase() {
-    if (!rows.length) return
-    setSaving(true)
-    try {
-      const colRef = collection(db, 'risultati', stagione.replace(/\//g, '-'), 'righe')
-      const snap = await getDocs(colRef)
-      let del = writeBatch(db); let dc = 0
-      for (const d of snap.docs) {
-        del.delete(d.ref); dc++
-        if (dc === 400) { await del.commit(); del = writeBatch(db); dc = 0 }
-      }
-      if (dc > 0) await del.commit()
-      let wb = writeBatch(db); let wc = 0
-      for (const row of rows) {
-        wb.set(doc(colRef), { ...row, _stagione: stagione })
-        wc++
-        if (wc === 400) { await wb.commit(); wb = writeBatch(db); wc = 0 }
-      }
-      if (wc > 0) await wb.commit()
-      setSaved(rows.length)
-    } catch (e) { alert('Errore Firebase: ' + e.message) }
-    finally { setSaving(false) }
-  }
 
   function downloadCSV() {
     const csv = '﻿' + rowsToCSV(rows)
@@ -411,11 +383,6 @@ export default function Estrazione() {
                   {format !== 'FIN' && ` · split ${splitBase}m`}
                 </p>
               </div>
-              {savedCount !== null && (
-                <span className="text-xs bg-green-100 text-green-700 font-semibold px-3 py-1 rounded-full">
-                  ✓ {savedCount} righe su Firebase
-                </span>
-              )}
               <button onClick={() => setShowLog(v => !v)}
                 className={'px-3 py-2 border border-sb-sep text-xs font-medium rounded-lg hover:bg-sb-bg ' + (showLog ? 'text-sb-blue border-sb-blue' : 'text-sb-muted')}>
                 📋 Log
@@ -424,11 +391,7 @@ export default function Estrazione() {
                 className="px-4 py-2 border border-sb-sep text-sm font-medium text-sb-text rounded-lg hover:bg-sb-bg">
                 ⬇ CSV
               </button>
-              <button onClick={saveToFirebase} disabled={saving}
-                className="px-5 py-2 bg-sb-green text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50">
-                {saving ? '⏳ Salvataggio…' : '🔥 Salva su Firebase'}
-              </button>
-              <button onClick={() => { setRows([]); setFileName(''); setSaved(null); setLog([]); setFormat(null) }}
+              <button onClick={() => { setRows([]); setFileName(''); setLog([]); setFormat(null) }}
                 className="px-3 py-2 text-sm text-sb-muted border border-sb-sep rounded-lg hover:bg-sb-bg">
                 Svuota
               </button>
