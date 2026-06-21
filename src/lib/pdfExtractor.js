@@ -252,12 +252,18 @@ function looksLikeHeaderLine(line) {
 // ─── Riga atleta ──────────────────────────────────────────────────────────────
 function cleanAtletaName(nome) {
   nome = (nome || '').replace(/\d+/g, '').replace(/\s+/g, ' ').trim()
-  return nome.split(' ').filter(t => {
+  const toks = nome.split(' ').filter(t => {
     const up = t.toUpperCase().replace('.', '')
     if (RE_COUNTRY3.test(up) && up === 'ITA') return false
     if (STOP_NAME_TOKENS.has(up)) return false
     return true
-  }).join(' ').trim()
+  })
+  // Rimuove codici categoria finali (J, R, S, C, EA, EB, MA, MB…)
+  // che restano in coda quando il PDF FIN stampa: COGNOME Nome CAT ANNO SOCIETA TEMPO
+  while (toks.length && /^[A-Z]{1,2}$/.test(toks[toks.length - 1])) {
+    toks.pop()
+  }
+  return toks.join(' ').trim()
 }
 
 function parseAthleteLine(line) {
@@ -276,6 +282,9 @@ function parseAthleteLine(line) {
     const up = tokens[i].toUpperCase().replace('.', '')
     if (RE_COUNTRY3.test(up)) break
     if (STOP_NAME_TOKENS.has(up)) break
+    // Interrompe all'anno di nascita (19xx o 20xx) — formato FIN/federnuoto
+    // es: "ROSSI Mario J 2008 SUPERBA NUOTO SSD 57.74"
+    if (/^(19|20)\d{2}$/.test(tokens[i])) break
     nameToks.push(tokens[i])
   }
   const atleta = cleanAtletaName(nameToks.join(' '))
@@ -528,7 +537,7 @@ export async function extractPDF({
   let lastDate = ''
   let currentPhase = ''
   let attesaNuovaGara = false
-  let inResultsMode = false
+  let inResultsMode = true   // FIX: alcuni PDF (es. federnuoto.toscana.it) non hanno riga "Risultati"
 
   for (let idx = 0; idx < allLines.length; idx++) {
     const line = allLines[idx]
@@ -537,7 +546,7 @@ export async function extractPDF({
 
     if (/^\s*Risultati\s*$/i.test(line)) { inResultsMode = true; continue }
     if (/\bProgramma\s+gare\b/i.test(line)) {
-      inResultsMode = false; current = null; attesaNuovaGara = true; currentPhase = ''; inResultsMode = true; continue
+      inResultsMode = false; current = null; attesaNuovaGara = true; currentPhase = ''; continue
     }
 
     for (const [phase, rx] of PHASE_RULES) {
