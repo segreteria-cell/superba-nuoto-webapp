@@ -189,7 +189,7 @@ function parseAthleteLine(line) {
 const Y_TOL = 0.6
 
 async function pdfToLines(arrayBuffer, onProgress) {
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise
   const allLines = []
 
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -236,7 +236,7 @@ async function pdfToLines(arrayBuffer, onProgress) {
  * Chiama pdfToLines sulle prime 4 pagine per la detection.
  */
 export async function detectFormat(arrayBuffer) {
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise
   const maxPages = Math.min(4, pdf.numPages)
   const sample = []
 
