@@ -201,10 +201,18 @@ function computeStats(rows) {
   const perSezFin = {}
   for (const [k, v] of Object.entries(perSez)) perSezFin[k] = { gare: v.gare, atleti: v.atleti.size }
   const perCat = {}
-  for (const c of CAT_ORDER) perCat[c] = { M: 0, F: 0 }
+  for (const c of CAT_ORDER) perCat[c] = { M: 0, F: 0, gareM: 0, gareF: 0, _setM: new Set(), _setF: new Set() }
   for (const r of rows) {
     const c = normCat(r.categoria)
-    if (perCat[c]) { if (r.sesso === 'Male') perCat[c].M++; else if (r.sesso === 'Female') perCat[c].F++ }
+    if (perCat[c]) {
+      if (r.sesso === 'Male')   { perCat[c]._setM.add(r.atleta); perCat[c].gareM++ }
+      else if (r.sesso === 'Female') { perCat[c]._setF.add(r.atleta); perCat[c].gareF++ }
+    }
+  }
+  for (const c of CAT_ORDER) {
+    perCat[c].M = perCat[c]._setM.size
+    perCat[c].F = perCat[c]._setF.size
+    delete perCat[c]._setM; delete perCat[c]._setF
   }
   const perSpec = {}
   for (const s of SPEC_ORDER) perSpec[s] = { M: 0, F: 0 }
@@ -1089,12 +1097,15 @@ export default function Qualifiche() {
           <div className="text-xs font-semibold text-sb-muted uppercase mb-3">Per Categoria</div>
           <div className="flex flex-wrap gap-3">
             {CAT_ORDER.map(c => {
-              const d = stats.perCat[c] || { M: 0, F: 0 }
-              return d.M + d.F > 0 ? (
-                <div key={c} className="text-center min-w-[70px]">
+              const d = stats.perCat[c] || { M: 0, F: 0, gareM: 0, gareF: 0 }
+              const totAtleti = d.M + d.F
+              const totGare   = (d.gareM || 0) + (d.gareF || 0)
+              return totAtleti > 0 ? (
+                <div key={c} className="text-center min-w-[80px]">
                   <div className="text-xs font-bold text-sb-text">{c}</div>
-                  <div className="text-lg font-bold text-sb-blue">{d.M + d.F}</div>
+                  <div className="text-lg font-bold text-sb-blue">{totAtleti}</div>
                   <div className="text-xs text-sb-muted">M:{d.M} F:{d.F}</div>
+                  <div className="text-xs text-sb-muted mt-0.5">{totGare} gare</div>
                 </div>
               ) : null
             })}
