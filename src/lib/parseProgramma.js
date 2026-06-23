@@ -38,6 +38,7 @@ function normCat(s) {
   if (u.includes('JUNIOR'))  return 'JUNIORES'
   if (u.includes('CADET'))   return 'CADETTI'
   if (u.includes('SENIOR'))  return 'SENIORES'
+  if (u === 'J/C/S' || u === 'JCS' || u === 'J/C') return 'JCS'
   return null
 }
 
@@ -190,13 +191,20 @@ function parseProgrammaFIN1(lines) {
   const result = []
   let curGiornata = null
   let curSessione = null
+  let curSezione  = null  // 'RAGAZZI' | 'JCS' | null
 
-  const RE_GARA  = /^(Serie(?:\s+(?:lente|veloci))?|Batterie|Finali\s+singole)\s+(\d+)(?:x(\d+))?\s*m\s+([\waaeeeiioou\s]+?)\s+(F|M|donne|uomini|femmine|maschi)\s*(J\/C\/S|J\/C|S|R\d[-\d]*)?/i
-  const RE_GIORN = /^(I{1,3}V?|VI{0,3}|IX|XI{0,3})\s+giornata\s*[–—\-]\s*(.+)/i
-  const RE_SESS  = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)(?:\s+(?:Mattino|Mattina|Pomeriggio))?$/i
+  const RE_GARA    = /^(Serie(?:\s+(?:lente|veloci))?|Batterie|Finali\s+singole)\s+(\d+)(?:x(\d+))?\s*m\s+([\waaeeeiioou\s]+?)\s+(F|M|donne|uomini|femmine|maschi)\s*(J\/C\/S|J\/C|S|R\d[-\d]*)?/i
+  const RE_GIORN   = /^(I{1,3}V?|VI{0,3}|IX|XI{0,3})\s+giornata\s*[–—\-]\s*(.+)/i
+  const RE_SESS    = /^(Mattino|Mattina|Pomeriggio|MATTINO|POMERIGGIO)(?:\s+(?:Mattino|Mattina|Pomeriggio))?$/i
+  const RE_SEZIONE = /programma.gare della sezione\s+(ragazzi|junior|cadet|senior)/i
 
   for (const line of lines) {
     const firstCol = line.split('\t')[0]
+    const mSez = RE_SEZIONE.exec(firstCol)
+    if (mSez) {
+      curSezione = /ragazzi/i.test(mSez[1]) ? 'RAGAZZI' : 'JCS'
+      continue
+    }
     const mg = RE_GIORN.exec(firstCol)
     if (mg) {
       curGiornata = { giornata: mg[1].trim(), data: mg[2].trim(), sessioni: [] }
@@ -219,7 +227,10 @@ function parseProgrammaFIN1(lines) {
       const spec   = normSpec(mc[4].trim())
       const sesso  = normSesso(mc[5])
       const catRaw = mc[6] || ''
-      curSessione.gare.push({ tipo, dist, spec, sesso, cat: normCat(catRaw), catRaw })
+      let cat = normCat(catRaw)
+      // Se il parser non ha trovato categoria esplicita, usa la sezione corrente
+      if (!cat && curSezione) cat = curSezione
+      curSessione.gare.push({ tipo, dist, spec, sesso, cat, catRaw })
       continue
     }
     if (curGiornata && !curSessione && /^\d+\s*[.)]/.test(firstCol)) {
@@ -548,16 +559,4 @@ export function parseGraduatoriaLimiti(text) {
   const RE_HDR = /^(femmine|maschi|donne|uomini)/i
   const RE_ROW = /^(\d+)\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+([\d\s]+)$/i
   for (const line of lines) {
-    if (RE_HDR.test(line)) continue
-    const m = RE_ROW.exec(line)
-    if (m) {
-      const dist = parseInt(m[1]), spec = normSpec(m[2])
-      const nums = m[3].trim().split(/\s+/).map(Number)
-      if (nums[0] !== undefined) limiti[dist+'|'+spec+'|Female'] = nums[0]
-      if (nums[1] !== undefined) limiti[dist+'|'+spec+'|Male']   = nums[1]
-      if (nums[2] !== undefined && nums[2] > (limiti[dist+'|'+spec+'|Male'] || 0))
-        limiti[dist+'|'+spec+'|Male'] = nums[2]
-    }
-  }
-  return limiti
-}
+    if
