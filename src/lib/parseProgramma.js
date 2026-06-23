@@ -559,4 +559,16 @@ export function parseGraduatoriaLimiti(text) {
   const RE_HDR = /^(femmine|maschi|donne|uomini)/i
   const RE_ROW = /^(\d+)\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+([\d\s]+)$/i
   for (const line of lines) {
-    if
+    if (RE_HDR.test(line)) continue
+    const m = RE_ROW.exec(line)
+    if (m) {
+      const dist = parseInt(m[1]), spec = normSpec(m[2])
+      const nums = m[3].trim().split(/\s+/).map(Number)
+      if (nums[0] !== undefined) limiti[dist+'|'+spec+'|Female'] = nums[0]
+      if (nums[1] !== undefined) limiti[dist+'|'+spec+'|Male']   = nums[1]
+      if (nums[2] !== undefined && nums[2] > (limiti[dist+'|'+spec+'|Male'] || 0))
+        limiti[dist+'|'+spec+'|Male'] = nums[2]
+    }
+  }
+  return limiti
+}

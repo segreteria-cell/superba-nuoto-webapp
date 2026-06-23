@@ -1144,4 +1144,100 @@ export default function Qualifiche() {
                         <span className="text-sm text-sb-text flex-1">{SPEC_NAMES[s] || s}</span>
                         <div className="flex gap-1">
                           <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: '#E6F1FB', color: '#185FA5' }}>{d.M}</span>
-                          <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ backgr
+                          <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: '#FBEAF0', color: '#993556' }}>{d.F}</span>
+                        </div>
+                        <span className="text-sm font-medium text-sb-text w-5 text-right">{d.M + d.F}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── TABLE ── */}
+      {filtered.length > 0 && (
+        <div className="rounded-xl border border-sb-sep overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-sb-blue text-white text-xs">
+                  {['Atleta','Sez.','Cat.','S','Vasca','Specialità','Dist.','Tempo','FINA','Tipo'].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => (
+                  <tr key={r._id + i} className={`border-b border-sb-sep/50 ${i % 2 === 0 ? 'bg-white' : 'bg-sb-bg/30'} hover:bg-sb-hover/5`}>
+                    <td className="px-3 py-1.5 font-medium text-sb-text">{r.atleta}</td>
+                    <td className="px-3 py-1.5 font-bold text-sb-blue text-xs">{r.sezione}</td>
+                    <td className="px-3 py-1.5 text-sb-muted text-xs">{normCat(r.categoria)}</td>
+                    <td className="px-3 py-1.5 text-sb-muted text-xs">{r.sesso === 'Male' ? 'M' : 'F'}</td>
+                    <td className="px-3 py-1.5 text-sb-muted text-xs">{r.vasca?.replace(' metri', 'm')}</td>
+                    <td className="px-3 py-1.5 text-sb-muted">{r.specialita}</td>
+                    <td className="px-3 py-1.5 text-sb-muted">{r.distanza}</td>
+                    <td className="px-3 py-1.5 font-mono text-sb-text">{r.tempo}</td>
+                    <td className="px-3 py-1.5 text-sb-muted">{r.fina}</td>
+                    <td className="px-3 py-1.5">
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${r._source === 'xlsx' ? 'bg-blue-100 text-blue-600' : r._source === 'TL' ? 'bg-purple-100 text-purple-600' : 'bg-green-100 text-green-600'}`}>
+                        {r._source === 'xlsx' ? 'TL' : r._source}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {filtered.length === 0 && xlsxRows.length === 0 && (
+        <div className="text-center py-16 text-sb-muted">
+          <p className="text-4xl mb-3">🏊</p>
+          <p className="font-semibold">Nessuna qualifica caricata</p>
+          <p className="text-xs mt-1">Importa un file Excel o carica una sessione salvata</p>
+        </div>
+      )}
+
+      {/* ── STATUS ── */}
+      {status && (
+        <div className={`text-sm px-4 py-2 rounded-lg ${status.startsWith('Errore') ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+          {status}
+        </div>
+      )}
+
+      {/* ── MODALS ── */}
+      {showAggEstero && (
+        <ModalAggiungiEstero
+          onClose={() => setShowAggEstero(false)}
+          onAdd={e => setEsteri(prev => [...prev, e])}
+        />
+      )}
+      {showGestEsteri && (
+        <ModalGestisciEsteri
+          esteri={esteri}
+          onClose={() => setShowGestEsteri(false)}
+          onRemove={id => setEsteri(prev => prev.filter(e => e._id !== id))}
+        />
+      )}
+      {showRinunce && (
+        <ModalRinunce
+          allRows={allRows}
+          rinunce={rinunce}
+          onClose={() => setShowRinunce(false)}
+          onSave={sel => setRinunce(sel)}
+        />
+          )}
+      {showAnalisi && (
+        <ModalAnalisiSezione
+          rows={filtered}
+          onClose={() => setShowAnalisi(false)}
+        />
+      )}
+    </div>
+  </div>
+  )
+}
