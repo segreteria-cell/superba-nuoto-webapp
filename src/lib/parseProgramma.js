@@ -449,12 +449,27 @@ function parseProgrammaFIN4(lines) {
 
 // ── entry point (parser testuale) ────────────────────────────────────────────
 
+// Post-processing: se alcuni giorni hanno gare con catRaw J/C/S e altri no,
+// assegna 'JCS' o 'RAGAZZI' a tutte le gare prive di categoria esplicita.
+function inferCatFromDays(giorni) {
+  for (const g of giorni) {
+    const hasJCS = g.sessioni.some(s => s.gare.some(ga => ga.catRaw && /J\/C/i.test(ga.catRaw)))
+    const hasCatNull = g.sessioni.some(s => s.gare.some(ga => !ga.cat))
+    if (!hasCatNull) continue
+    const inferred = hasJCS ? 'JCS' : 'RAGAZZI'
+    for (const s of g.sessioni)
+      for (const ga of s.gare)
+        if (!ga.cat) ga.cat = inferred
+  }
+  return giorni
+}
+
 export function parseProgramma(text) {
   const lines = text.split(/[\n\r]+/).map(l => normalizeLine(l)).filter(l => l.replace(/\t/g,'').trim())
   if (isFormatoFIN3(lines)) return parseProgrammaFIN3(lines)
   if (isFormatoFIN4(lines)) return parseProgrammaFIN4(lines)
   const fin1 = parseProgrammaFIN1(lines)
-  if (fin1.length > 0) return fin1
+  if (fin1.length > 0) return inferCatFromDays(fin1)
   if (isFormatoFIN2(lines)) return parseProgrammaFIN2(lines)
   return []
 }
