@@ -1046,72 +1046,114 @@ export default function Qualifiche() {
         </div>
       </div>
 
-      {/* ── STATS CARDS ── */}
-      {filtered.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {/* Total gare */}
-          <div className="bg-sb-panel rounded-xl p-4 border border-sb-sep">
-            <div className="text-xs font-semibold text-sb-muted uppercase mb-1">Totale Gare</div>
-            <div className="text-3xl font-bold text-sb-text">{stats.totGare.total}</div>
-            <div className="text-xs text-sb-muted mt-1">M: {stats.totGare.M} · F: {stats.totGare.F}</div>
-          </div>
-          {/* Total atleti */}
-          <div className="bg-sb-panel rounded-xl p-4 border border-sb-sep">
-            <div className="text-xs font-semibold text-sb-muted uppercase mb-1">Totale Atleti</div>
-            <div className="text-3xl font-bold text-sb-text">{stats.totAtleti.total}</div>
-            <div className="text-xs text-sb-muted mt-1">M: {stats.totAtleti.M} · F: {stats.totAtleti.F}</div>
-          </div>
-          {/* Per sezione */}
-          <div className="bg-sb-panel rounded-xl p-4 border border-sb-sep col-span-2 md:col-span-1">
-            <div className="text-xs font-semibold text-sb-muted uppercase mb-2">Per Sezione</div>
-            <div className="space-y-0.5">
-              {SEZIONE_ORDER.filter(s => stats.perSezione[s]).map(s => (
-                <div key={s} className="flex justify-between text-xs">
-                  <span className="font-bold text-sb-blue w-6">{s}</span>
-                  <span className="text-sb-muted">{stats.perSezione[s].gare} gare / {stats.perSezione[s].atleti} atleti</span>
+      {/* ── STATS ── */}
+      {filtered.length > 0 && (() => {
+        const CAT_COLORS = { RAGAZZI: '#378ADD', JUNIORES: '#D4537E', CADETTI: '#7F77DD', SENIORES: '#1D9E75', ASSOLUTI: '#888780' }
+        const SPEC_STYLE = {
+          SL: { bg: '#E6F1FB', color: '#185FA5' },
+          DO: { bg: '#EAF3DE', color: '#3B6D11' },
+          RA: { bg: '#FBEAF0', color: '#993556' },
+          FA: { bg: '#FAEEDA', color: '#854F0B' },
+          MX: { bg: '#EEEDFE', color: '#534AB7' },
+        }
+        const SPEC_NAMES = { SL: 'Stile libero', DO: 'Dorso', RA: 'Rana', FA: 'Farfalla', MX: 'Misti' }
+        const maxSezGare = Math.max(...SEZIONE_ORDER.filter(s => stats.perSezione[s]).map(s => stats.perSezione[s].gare), 1)
+        return (
+          <div className="flex flex-col gap-3">
+            {/* Hero row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl p-5 relative overflow-hidden" style={{ background: '#185FA5' }}>
+                <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'rgba(255,255,255,0.65)' }}>Gare totali</div>
+                <div className="text-5xl font-medium" style={{ color: '#fff', lineHeight: 1 }}>{stats.totGare.total}</div>
+                <div className="flex gap-4 mt-3">
+                  <span className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}><span style={{ color: '#fff', fontWeight: 500 }}>{stats.totGare.M}</span> maschili</span>
+                  <span className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}><span style={{ color: '#fff', fontWeight: 500 }}>{stats.totGare.F}</span> femminili</span>
                 </div>
-              ))}
+              </div>
+              <div className="rounded-xl p-5 relative overflow-hidden" style={{ background: '#993556' }}>
+                <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'rgba(255,255,255,0.65)' }}>Atleti qualificati</div>
+                <div className="text-5xl font-medium" style={{ color: '#fff', lineHeight: 1 }}>{stats.totAtleti.total}</div>
+                <div className="flex gap-4 mt-3">
+                  <span className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}><span style={{ color: '#fff', fontWeight: 500 }}>{stats.totAtleti.M}</span> maschi</span>
+                  <span className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}><span style={{ color: '#fff', fontWeight: 500 }}>{stats.totAtleti.F}</span> femmine</span>
+                </div>
+              </div>
             </div>
-          </div>
-          {/* Per specialità */}
-          <div className="bg-sb-panel rounded-xl p-4 border border-sb-sep">
-            <div className="text-xs font-semibold text-sb-muted uppercase mb-2">Per Specialità</div>
-            <div className="space-y-0.5">
-              {SPEC_ORDER.map(s => {
-                const d = stats.perSpec[s] || { M: 0, F: 0 }
-                return d.M + d.F > 0 ? (
-                  <div key={s} className="flex justify-between text-xs">
-                    <span className="font-bold text-sb-aqua w-6">{s}</span>
-                    <span className="text-sb-muted">M:{d.M} F:{d.F}</span>
+
+            {/* Categorie strip */}
+            <div className="grid grid-cols-4 gap-3">
+              {CAT_ORDER.map(c => {
+                const d = stats.perCat[c] || { M: 0, F: 0, gareM: 0, gareF: 0 }
+                const totAtleti = d.M + d.F
+                const totGare = (d.gareM || 0) + (d.gareF || 0)
+                if (!totAtleti) return null
+                return (
+                  <div key={c} className="bg-sb-panel rounded-xl border border-sb-sep p-3 flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: CAT_COLORS[c] || '#888' }} />
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-sb-muted">{c}</div>
+                      <div className="text-xl font-medium text-sb-text leading-tight">{totAtleti}</div>
+                      <div className="text-[10px] text-sb-muted">{totGare} gare · M:{d.M} F:{d.F}</div>
+                    </div>
                   </div>
-                ) : null
+                )
               })}
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* ── PER CATEGORIA ── */}
-      {filtered.length > 0 && (
-        <div className="bg-sb-panel rounded-xl p-4 border border-sb-sep">
-          <div className="text-xs font-semibold text-sb-muted uppercase mb-3">Per Categoria</div>
-          <div className="flex flex-wrap gap-3">
-            {CAT_ORDER.map(c => {
-              const d = stats.perCat[c] || { M: 0, F: 0, gareM: 0, gareF: 0 }
-              const totAtleti = d.M + d.F
-              const totGare   = (d.gareM || 0) + (d.gareF || 0)
-              return totAtleti > 0 ? (
-                <div key={c} className="text-center min-w-[80px]">
-                  <div className="text-xs font-bold text-sb-text">{c}</div>
-                  <div className="text-lg font-bold text-sb-blue">{totAtleti}</div>
-                  <div className="text-xs text-sb-muted">M:{d.M} F:{d.F}</div>
-                  <div className="text-xs text-sb-muted mt-0.5">{totGare} gare</div>
+            {/* Sezione + Specialità */}
+            <div className="grid grid-cols-2 gap-3">
+              {/* Per sezione */}
+              <div className="bg-sb-panel rounded-xl border border-sb-sep p-4">
+                <div className="text-xs font-semibold uppercase tracking-wider text-sb-muted mb-3">Per sezione</div>
+                <div className="flex gap-3 mb-3">
+                  <span className="flex items-center gap-1.5 text-xs text-sb-muted"><span className="inline-block w-2 h-2 rounded-full" style={{ background: '#378ADD' }}/>Maschile</span>
+                  <span className="flex items-center gap-1.5 text-xs text-sb-muted"><span className="inline-block w-2 h-2 rounded-full" style={{ background: '#D4537E' }}/>Femminile</span>
                 </div>
-              ) : null
-            })}
+                <div className="flex flex-col gap-2">
+                  {SEZIONE_ORDER.filter(s => stats.perSezione[s]).map(s => {
+                    const d = stats.perSezione[s]
+                    const pct = (v) => Math.round((v / maxSezGare) * 100)
+                    return (
+                      <div key={s} className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-sb-text w-5">{s}</span>
+                        <div className="flex-1 h-5 rounded bg-sb-bg overflow-hidden relative flex">
+                          <div className="h-full rounded-l" style={{ width: `${pct(Math.ceil(d.gare * (stats.totGare.M / (stats.totGare.total || 1))))}%`, background: '#378ADD' }} />
+                          <div className="h-full" style={{ width: `${pct(Math.floor(d.gare * (stats.totGare.F / (stats.totGare.total || 1))))}%`, background: '#D4537E' }} />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-sb-muted">{d.atleti} at · {d.gare} g</span>
+                        </div>
+                        <span className="text-xs font-medium text-sb-text w-5 text-right">{d.gare}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Per specialità */}
+              <div className="bg-sb-panel rounded-xl border border-sb-sep p-4">
+                <div className="text-xs font-semibold uppercase tracking-wider text-sb-muted mb-3">Per specialità</div>
+                <div className="flex flex-col gap-2.5">
+                  {SPEC_ORDER.map(s => {
+                    const d = stats.perSpec[s] || { M: 0, F: 0 }
+                    if (!d.M && !d.F) return null
+                    const st = SPEC_STYLE[s] || { bg: '#f0f0f0', color: '#666' }
+                    return (
+                      <div key={s} className="flex items-center gap-2.5">
+                        <span className="text-xs font-semibold w-7 text-center py-0.5 rounded" style={{ background: st.bg, color: st.color }}>{s}</span>
+                        <span className="text-sm text-sb-text flex-1">{SPEC_NAMES[s] || s}</span>
+                        <div className="flex gap-1">
+                          <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: '#E6F1FB', color: '#185FA5' }}>{d.M}</span>
+                          <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: '#FBEAF0', color: '#993556' }}>{d.F}</span>
+                        </div>
+                        <span className="text-sm font-medium text-sb-text w-5 text-right">{d.M + d.F}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── TABLE ── */}
       {filtered.length > 0 && (
