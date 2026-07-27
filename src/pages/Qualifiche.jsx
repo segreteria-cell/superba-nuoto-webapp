@@ -106,6 +106,30 @@ function normalizeSpec(s) {
   return s
 }
 
+// Converte "400 Stile Libero" / "100 Dorso" (formato _gara di Classifiche/GradPosizioni)
+// in { distanza: 400, specialita: 'STILE' } (formato usato dalle righe xlsx in Qualifiche).
+function parseGaraFin(garaStr) {
+  const s = String(garaStr || '').trim()
+  const m = s.match(/^(\d+)\s+(.+)$/)
+  if (!m) return { distanza: 0, specialita: '' }
+  return { distanza: parseInt(m[1], 10) || 0, specialita: normalizeSpec(m[2].trim()) }
+}
+
+// Legge le righe calcolate nella tab "Qualificati per Graduatoria" (salvate in
+// localStorage sotto 'qg_grad_rows' da GradPosizioni.jsx) e le converte nel
+// formato riga usato qui, escludendo rinunce/riserve non confermate.
+function readGradRowsFromStorage() {
+  try {
+    const raw = localStorage.getItem('qg_grad_rows')
+    if (!raw) return []
+    const dec = LZString.decompress(raw)
+    const parsed = JSON.parse(dec || raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+
+const SESSO_GRAD_TO_XLSX = { Maschi: 'Male', Femmine: 'Female' }
+
 function normalizeTime(val) {
   if (val == null || val === '') return ''
   const txt = String(val).replace(',', '.').trim()
@@ -875,8 +899,61 @@ export default function Qualifiche() {
       .finally(() => setPdfLoading(false))
   }, [competizione, regolamenti])
 
-  // Derived: all rows merged (xlsx + esteri), then filtered
-  const allRows = useMemo(() => [...xlsxRows, ...esteri], [xlsxRows, esteri])
+  // Righe qualificate per graduatoria (tab "Qualificati per Graduatoria"), incluse
+  // solo se il toggle "Includi Graduatoria" è attivo, se sono state calcolate per
+  // la STESSA competizione qui selezionata, e non già coperte da una qualifica TL.
+  const gradInfo = useMemo(() => {
+    if (!inclusiGraduatoria) return { rows: [], stato: 'off' }
+
+    const compCalcolata = (localStorage.getItem('qg_comp') || '').trim()
+    if (!competizione) return { rows: [], stato: 'no_comp' }
+    if (!compCalcolata || compCalcolata !== competizione.trim()) {
+      return { rows: [], stato: 'comp_mismatch', compCalcolata }
+    }
+
+    const gradRowsRaw = readGradRowsFromStorage()
+    if (!gradRowsRaw.length) return { rows: [], stato: 'no_data' }
+
+    // Esclude: aventi diritto che hanno rinunciato, riserve non confermate per rinuncia
+    const gradRows = gradRowsRaw.filter(r =>
+      !r._rinuncia_grad && !((r._extra || r._riserva) && !r._rinuncia)
+    )
+
+    const tlKeys = new Set(
+      [...xlsxRows, ...esteri].map(r => `${r.atleta.trim().toLowerCase()}|${r.specialita}|${r.distanza}`)
+    )
+
+    const seen = new Set()
+    const rows = []
+    for (const r of gradRows) {
+      const atleta = (r.ATLETA || '').trim()
+      if (!atleta) continue
+      const { distanza, specialita } = parseGaraFin(r.GARA)
+      if (!specialita || !distanza) continue
+      const key = `${atleta.toLowerCase()}|${specialita}|${distanza}`
+      if (tlKeys.has(key) || seen.has(key)) continue
+      seen.add(key)
+      rows.push({
+        _id: `grad_${key}`,
+        _source: 'GRAD',
+        atleta, nome: '', cognome: atleta, societa: '',
+        categoria: r.CATEGORIA || '',
+        sesso: SESSO_GRAD_TO_XLSX[r.SESSO] || r.SESSO || '',
+        vasca: String(r.VASCA || '').includes('50') ? '50 metri' : '25 metri',
+        specialita, distanza,
+        tempo: r.TEMPO || '',
+        fina: parseFloat(r.PTFINA || 0) || 0,
+        sezione: deriveSezione(atleta),
+      })
+    }
+    return { rows, stato: 'ok' }
+  }, [inclusiGraduatoria, competizione, xlsxRows, esteri])
+
+  // Derived: all rows merged (xlsx + esteri + eventuale graduatoria), then filtered
+  const allRows = useMemo(
+    () => [...xlsxRows, ...esteri, ...gradInfo.rows],
+    [xlsxRows, esteri, gradInfo]
+  )
   const filtered = useMemo(
     () => applyFilters(allRows, { vasca: filterVasca, sesso: filterSesso, soloUnNome, rinunce }),
     [allRows, filterVasca, filterSesso, soloUnNome, rinunce]
@@ -1032,8 +1109,21 @@ export default function Qualifiche() {
           <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-sb-text">
             <input type="checkbox" checked={inclusiGraduatoria} onChange={e => setInclusiGraduatoria(e.target.checked)} className="accent-sb-green w-4 h-4" />
             <span className="text-sb-green font-semibold">Includi Graduatoria</span>
-            {Object.keys(graduatoriaLimiti).length > 0 && (
-              <span className="text-xs text-sb-muted">(limiti caricati)</span>
+            {inclusiGraduatoria && gradInfo.stato === 'ok' && (
+              <span className="text-xs text-sb-muted">(+{gradInfo.rows.length} da graduatoria)</span>
+            )}
+            {inclusiGraduatoria && gradInfo.stato === 'no_comp' && (
+              <span className="text-xs text-orange-600">seleziona prima una competizione</span>
+            )}
+            {inclusiGraduatoria && gradInfo.stato === 'comp_mismatch' && (
+              <span className="text-xs text-orange-600" title={`Calcolata per: ${gradInfo.compCalcolata}`}>
+                ⚠ graduatoria calcolata per un'altra competizione
+              </span>
+            )}
+            {inclusiGraduatoria && gradInfo.stato === 'no_data' && (
+              <span className="text-xs text-orange-600">
+                ⚠ vai in "Qualificati per Graduatoria" e premi CALCOLA
+              </span>
             )}
           </label>
           <button onClick={() => setShowAggEstero(true)} className={btnSecond}>+ Aggiungi Estero</button>
