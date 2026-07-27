@@ -3,6 +3,7 @@ import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
 import { ref as rtdbRef, get as rtdbGet, set as rtdbSet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
+import { extractPdfText, parseGraduatoriaLimiti } from '../lib/parseProgramma'
 
 // ── Firebase helpers ──────────────────────────────────────────────────────────
 
@@ -33,6 +34,12 @@ async function cloudLoadRegolamenti() {
   const val = snap.val()
   const dec = LZString.decompressFromBase64(val.data) || LZString.decompress(val.data)
   return JSON.parse(dec) || []
+}
+
+async function cloudLoadPdf(id) {
+  const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/files/' + id))
+  if (!snap.exists()) return null
+  return LZString.decompressFromBase64(snap.val()) // base64 del PDF
 }
 
 // ── localStorage helpers ──────────────────────────────────────────────────────
@@ -138,6 +145,40 @@ function compKey(comp) {
   return comp.toLowerCase().replace(/[^a-z0-9]/g, '_')
 }
 
+// ── Top N dal regolamento (invece del valore manuale) ────────────────────────
+// graduatoriaLimiti ha chiavi "dist|SPEC|Sesso" (es. "400|STILE|Female"),
+// prodotte da parseGraduatoriaLimiti(text) leggendo il PDF del regolamento.
+
+const SESSO_IT_TO_EN = { Maschi: 'Male', Femmine: 'Female' }
+
+function specKeyFromGara(gara) {
+  const g = (gara || '').toUpperCase()
+  if (g.includes('STILE') || g.includes('LIBERO')) return 'STILE'
+  if (g.includes('DORSO'))    return 'DORSO'
+  if (g.includes('RANA'))     return 'RANA'
+  if (g.includes('FARFALLA')) return 'FARFALLA'
+  if (g.includes('MISTI'))    return 'MISTI'
+  return ''
+}
+
+function distFromGara(gara) {
+  const m = String(gara || '').match(/^(\d+)/)
+  return m ? parseInt(m[1], 10) : 0
+}
+
+// Top N per la gara/sesso indicati: se il regolamento (graduatoriaLimiti) lo
+// specifica lo usa, altrimenti ricade sul valore manuale (fallback).
+function getTopNForGara(gara, sessoIt, limiti, fallback) {
+  const dist = distFromGara(gara)
+  const spec = specKeyFromGara(gara)
+  const sessoEn = SESSO_IT_TO_EN[sessoIt] || sessoIt
+  if (dist && spec) {
+    const val = limiti[`${dist}|${spec}|${sessoEn}`]
+    if (val !== undefined && val !== null && !isNaN(val)) return val
+  }
+  return fallback
+}
+
 // Mappa un nome competizione (breve, come qui, o esteso, come in Qualifiche/
 // Regolamenti) alla stessa chiave canonica di REG_COMPS. Speculare a
 // _reg_match_comp in NuotoDownloader.py.
@@ -189,6 +230,25 @@ export default function GradPosizioni() {
     const match = regolamenti.find(r => matchRegComp(r.nome) === c)
     return match ? match.nome : c
   }, [regolamenti])
+
+  // Numero di ammessi per gara/sesso letto dal PDF del regolamento (se
+  // caricato in tab Regolamenti per questa competizione). Se il regolamento
+  // non specifica un numero per una gara, si usa il Top N manuale come
+  // fallback (vedi getTopNForGara).
+  const [graduatoriaLimiti, setGraduatoriaLimiti] = useState({})
+  const [limitiLoading,     setLimitiLoading]     = useState(false)
+  useEffect(() => {
+    if (!competizione || !regolamenti.length) { setGraduatoriaLimiti({}); return }
+    const reg = regolamenti.find(r => matchRegComp(r.nome) === competizione)
+    if (!reg) { setGraduatoriaLimiti({}); return }
+    setLimitiLoading(true)
+    cloudLoadPdf(reg.id).then(async base64 => {
+      if (!base64) { setGraduatoriaLimiti({}); return }
+      const text = await extractPdfText(base64)
+      setGraduatoriaLimiti(parseGraduatoriaLimiti(text))
+    }).catch(e => { console.warn('Errore lettura limiti regolamento:', e); setGraduatoriaLimiti({}) })
+      .finally(() => setLimitiLoading(false))
+  }, [competizione, regolamenti])
 
   // ── Risultati calcolati ───────────────────────────────────────────────────
   const [gradRows,   setGradRows]   = useState(() => lsGet('qg_grad_rows', []))
@@ -265,7 +325,6 @@ export default function GradPosizioni() {
 
     const catAmmesse = REG_CAT_AMMESSE[competizione] || { Femmine: [], Maschi: [] }
     const vascaComp  = REG_VASCA[competizione] || ''
-    const topN       = topNManuale
 
     function ok(r) {
       if (!isSuperba(r)) return false
@@ -291,6 +350,7 @@ export default function GradPosizioni() {
 
     for (const [key, righe] of bucket) {
       const [gara, cat, sx] = key.split('||')
+      const topN      = getTopNForGara(gara, sx, graduatoriaLimiti, topNManuale)
       const topNExtra = topN + 5
       const sorted    = [...righe].sort((a, b) => posN(a) - posN(b))
 
@@ -314,6 +374,7 @@ export default function GradPosizioni() {
           TEMPO:     r.Tempo || '',
           PTFINA:    r.PtFINA || '',
           DATA:      r.Data || '',
+          TOP_N:     String(topN),
           _extra:    isExtra,
           _riserva:  isExtra,
           _estero:   false,
@@ -343,9 +404,13 @@ export default function GradPosizioni() {
     const nRis   = result.filter(r => r._extra).length
     const nAtl   = new Set(result.map(r => r.ATLETA)).size
     const nGare  = new Set(result.map(r => `${r.GARA}|${r.CATEGORIA}|${r.SESSO}`)).size
-    setBadge(`${nAD} qualificati  ·  ${nRis} riserve pari tempo  ·  ${nAtl} atleti  ·  Top N: ${topN}  ·  ${nGare} combinazioni gara/cat`)
+    const nDaReg = Object.keys(graduatoriaLimiti).length
+    const topNInfo = nDaReg > 0
+      ? `Top N: da regolamento (${nDaReg} voci, fallback manuale ${topNManuale})`
+      : `Top N: ${topNManuale} (manuale — regolamento non caricato o senza tabella ammessi)`
+    setBadge(`${nAD} qualificati  ·  ${nRis} riserve pari tempo  ·  ${nAtl} atleti  ·  ${topNInfo}  ·  ${nGare} combinazioni gara/cat`)
     setError('')
-  }, [allRows, competizione, topNManuale])
+  }, [allRows, competizione, topNManuale, graduatoriaLimiti])
 
   // ── Ricalcola se cambiano rinunce ─────────────────────────────────────────
 
@@ -440,13 +505,11 @@ export default function GradPosizioni() {
     const present = new Set(gradRows.filter(r => r._extra || r._riserva).map(r => `${r._atleta_key}|${r._gara_key}`))
     const base = gradRows.filter(r => r._extra || r._riserva)
 
-    const topN       = topNManuale
-    const topNExtra  = topN + 5
-    const maxRecupero = getRecuperoMax(topN)
     const catAmmesse = REG_CAT_AMMESSE[competizione] || { Femmine: [], Maschi: [] }
     const vascaComp  = REG_VASCA[competizione] || ''
 
     // Candidati aggiuntivi da allRows (oltre top_n+5, fino a max_recupero)
+    // Top N per gara/sesso: dal regolamento se disponibile, altrimenti manuale.
     const extra = []
     const seenAD = new Set(gradRows.filter(r => !r._extra && !r._riserva).map(r => `${r._atleta_key}|${r._gara_key}`))
 
@@ -457,6 +520,9 @@ export default function GradPosizioni() {
       const sx  = r._sesso || ''
       const ammesse = catAmmesse[sx] || []
       if (ammesse.length > 0 && !ammesse.includes(cat)) continue
+      const topN       = getTopNForGara(r._gara, sx, graduatoriaLimiti, topNManuale)
+      const topNExtra  = topN + 5
+      const maxRecupero = getRecuperoMax(topN)
       const p = posN(r)
       if (p <= topNExtra || p > maxRecupero) continue
       const atleta = (r.Atleta || '').trim()
@@ -479,7 +545,7 @@ export default function GradPosizioni() {
       if (!seen2.has(dk)) { seen2.add(dk); merged.push(r) }
     }
     return merged.sort((a, b) => a.ATLETA.localeCompare(b.ATLETA, 'it'))
-  }, [gradRows, allRows, competizione, topNManuale])
+  }, [gradRows, allRows, competizione, topNManuale, graduatoriaLimiti])
 
   // ── Contatori badge popup ─────────────────────────────────────────────────
 
@@ -534,13 +600,21 @@ export default function GradPosizioni() {
             </select>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-sb-muted">Top N (default):</span>
+            <span className="text-sb-muted">Top N (fallback manuale):</span>
             <input
               type="number" min={1} max={200} value={topNManuale}
               onChange={e => setTopNManuale(Number(e.target.value) || DEFAULT_TOP_N)}
               className="w-16 border border-sb-sep rounded-md px-2 py-1 text-sm text-center"
+              title="Usato solo per le gare/sesso che il regolamento non specifica"
             />
           </div>
+          <span className="text-xs text-sb-muted">
+            {limitiLoading
+              ? '⏳ Lettura numero ammessi dal regolamento...'
+              : Object.keys(graduatoriaLimiti).length > 0
+                ? `📄 Ammessi da regolamento: ${Object.keys(graduatoriaLimiti).length} combinazioni gara/sesso`
+                : '⚠ Nessun numero ammessi letto dal regolamento (uso solo il fallback manuale)'}
+          </span>
           <span className="text-xs text-sb-muted">
             Solo atleti Superba  |  Vasca: {REG_VASCA[competizione] || '?'}m  |  Riserve: Top N +5
           </span>
