@@ -24,6 +24,17 @@ async function saveRinunceToCloud(compKey, data) {
   await rtdbSet(rtdbRef(rtdb, `grad_posizioni/rinunce/${compKey}`), data)
 }
 
+// Stessa lista "regolamenti" (nomi estesi, es. "Campionati Nazionali Giovanili
+// di Categoria") usata nella tab Qualifiche e nella tab Regolamenti, così il
+// nome mostrato qui coincide con quello mostrato lì.
+async function cloudLoadRegolamenti() {
+  const snap = await rtdbGet(rtdbRef(rtdb, 'regolamenti/meta'))
+  if (!snap.exists()) return []
+  const val = snap.val()
+  const dec = LZString.decompressFromBase64(val.data) || LZString.decompress(val.data)
+  return JSON.parse(dec) || []
+}
+
 // ── localStorage helpers ──────────────────────────────────────────────────────
 
 const lsGet = (key, fallback = null) => {
@@ -127,6 +138,19 @@ function compKey(comp) {
   return comp.toLowerCase().replace(/[^a-z0-9]/g, '_')
 }
 
+// Mappa un nome competizione (breve, come qui, o esteso, come in Qualifiche/
+// Regolamenti) alla stessa chiave canonica di REG_COMPS. Speculare a
+// _reg_match_comp in NuotoDownloader.py.
+function matchRegComp(nomeComp) {
+  const v = (nomeComp || '').toLowerCase()
+  if (v.includes('criteria')) return 'Criteria Giovanili'
+  if (v.includes('assoluto') && (v.includes('invernale') || v.includes('winter'))) return 'C.I. Assoluto Invernale'
+  if (v.includes('assoluto') && (v.includes('primaverile') || v.includes('spring') || v.includes('estivo'))) return 'C.I. Assoluto Primaverile'
+  if (v.includes('categoria')) return 'C.I. di Categoria'
+  if (v.includes('sette colli') || v.includes('settecolli')) return 'Trofeo Sette Colli'
+  return null
+}
+
 // ── Color classes per tag ─────────────────────────────────────────────────────
 
 // Usiamo stili inline per fedeltà cromatica al Windows app
@@ -154,6 +178,17 @@ export default function GradPosizioni() {
   // ── Impostazioni ──────────────────────────────────────────────────────────
   const [competizione, setCompetizione] = useState(() => localStorage.getItem('qg_comp') || 'C.I. di Categoria')
   const [topNManuale,  setTopNManuale]  = useState(() => parseInt(localStorage.getItem('qg_topn') || '30', 10))
+
+  // Nomi estesi (stessa fonte di Qualifiche/Regolamenti), solo per mostrare
+  // nel menu la stessa dicitura vista nelle altre tab. La chiave interna
+  // (competizione, usata per REG_CAT_AMMESSE/REG_VASCA/compKey) resta quella
+  // breve, invariata, per non perdere rinunce già salvate.
+  const [regolamenti, setRegolamenti] = useState([])
+  useEffect(() => { cloudLoadRegolamenti().then(setRegolamenti).catch(() => {}) }, [])
+  const nomeEsteso = useCallback((c) => {
+    const match = regolamenti.find(r => matchRegComp(r.nome) === c)
+    return match ? match.nome : c
+  }, [regolamenti])
 
   // ── Risultati calcolati ───────────────────────────────────────────────────
   const [gradRows,   setGradRows]   = useState(() => lsGet('qg_grad_rows', []))
@@ -494,7 +529,7 @@ export default function GradPosizioni() {
             <select value={competizione} onChange={e => setCompetizione(e.target.value)}
               className="border border-sb-sep rounded-md px-2 py-1 text-sm bg-white text-sb-text font-semibold text-[#5C6BC0]">
               {REG_COMPS.filter(c => REG_HA_GRAD[c]).map(c => (
-                <option key={c} value={c}>{c}</option>
+                <option key={c} value={c}>{nomeEsteso(c)}</option>
               ))}
             </select>
           </div>

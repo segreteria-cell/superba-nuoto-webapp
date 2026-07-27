@@ -130,6 +130,21 @@ function readGradRowsFromStorage() {
 
 const SESSO_GRAD_TO_XLSX = { Maschi: 'Male', Femmine: 'Female' }
 
+// Mappa un nome competizione (può essere il nome esteso mostrato qui, es.
+// "Campionati Nazionali Giovanili di Categoria", o il nome breve usato in
+// "Qualificati per Graduatoria", es. "C.I. di Categoria") alla stessa chiave
+// canonica, così le due tab si riconoscono anche se il testo è diverso.
+// Speculare a _reg_match_comp in NuotoDownloader.py.
+function matchRegComp(nomeComp) {
+  const v = (nomeComp || '').toLowerCase()
+  if (v.includes('criteria')) return 'Criteria Giovanili'
+  if (v.includes('assoluto') && (v.includes('invernale') || v.includes('winter'))) return 'C.I. Assoluto Invernale'
+  if (v.includes('assoluto') && (v.includes('primaverile') || v.includes('spring') || v.includes('estivo'))) return 'C.I. Assoluto Primaverile'
+  if (v.includes('categoria')) return 'C.I. di Categoria'
+  if (v.includes('sette colli') || v.includes('settecolli')) return 'Trofeo Sette Colli'
+  return null
+}
+
 function normalizeTime(val) {
   if (val == null || val === '') return ''
   const txt = String(val).replace(',', '.').trim()
@@ -907,7 +922,13 @@ export default function Qualifiche() {
 
     const compCalcolata = (localStorage.getItem('qg_comp') || '').trim()
     if (!competizione) return { rows: [], stato: 'no_comp' }
-    if (!compCalcolata || compCalcolata !== competizione.trim()) {
+    // Confronto tramite chiave canonica: "C.I. di Categoria" (nome breve usato
+    // in Qualificati per Graduatoria) e "Campionati Nazionali Giovanili di
+    // Categoria" (nome esteso qui) devono essere riconosciuti come la stessa
+    // competizione. Vedi matchRegComp.
+    const keyQui  = matchRegComp(competizione)
+    const keyGrad = matchRegComp(compCalcolata)
+    if (!compCalcolata || !keyGrad || !keyQui || keyGrad !== keyQui) {
       return { rows: [], stato: 'comp_mismatch', compCalcolata }
     }
 
