@@ -408,6 +408,9 @@ function buildGrigliaSheet(rows, sesso, programma) {
         const label = abbr ? `  ${code}  [${abbr}]` : `  ${code}`
         plan.push({ text: label, style: STL.event })
         const isStaff  = typeof gara.dist === 'string' && gara.dist.includes('x')
+        // gFindAthletes ordina per FINA/tempo: necessario per le staffette (le
+        // frazioni vanno assegnate ai più veloci). Per le gare individuali la
+        // lista va invece mostrata in ordine alfabetico.
         const athletes = gFindAthletes(sessoRows, sesso, gara.spec, gara.dist, gara.cat || null)
         if (isStaff) {
           const top4 = athletes.slice(0, 4)
@@ -418,7 +421,8 @@ function buildGrigliaSheet(rows, sesso, programma) {
         } else if (!athletes.length) {
           plan.push({ text: 'nessun qualificato', style: STL.noatl })
         } else {
-          for (const a of athletes) plan.push({ text: `  ${a.atleta}`, style: STL.atl })
+          const athletesAlpha = [...athletes].sort((a, b) => a.atleta.localeCompare(b.atleta, 'it'))
+          for (const a of athletesAlpha) plan.push({ text: `  ${a.atleta}`, style: STL.atl })
         }
       }
       plan.push({ text: '', style: {} })
@@ -440,7 +444,7 @@ function buildGrigliaSheet(rows, sesso, programma) {
     const fallback = [{ text: '(gare non in programma)', style: STL.noatl }]
     for (const [code, atls] of Object.entries(byEvent).sort()) {
       fallback.push({ text: `  ${code}`, style: STL.event })
-      for (const a of atls.sort((x,y) => y.fina - x.fina))
+      for (const a of [...atls].sort((x, y) => x.atleta.localeCompare(y.atleta, 'it')))
         fallback.push({ text: `  ${a.atleta}`, style: STL.atl })
       fallback.push({ text: '', style: {} })
     }
