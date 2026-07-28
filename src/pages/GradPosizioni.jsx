@@ -145,8 +145,28 @@ function compKey(comp) {
   return comp.toLowerCase().replace(/[^a-z0-9]/g, '_')
 }
 
+// ── Gruppo di ammissione (per il raggruppamento della classifica) ───────────
+// La graduatoria NON si fa per "anno" (1°/2°/3°) ma per gruppo più ampio:
+// solo i maschi Ragazzi hanno due classifiche separate — "R14" (1° Anno) e
+// "R" (2°+3° Anno insieme, un solo Top N condiviso tra le due annate); le
+// femmine Ragazzi hanno un'unica classifica "R" (1°+2° Anno insieme).
+// Juniores (1°+2° Anno, entrambi i sessi) è sempre un'unica classifica
+// "JUNIORES". Cadetti/Seniores non sono divisi per anno.
+// Stessa convenzione di gruppo usata da parseGraduatoriaLimitiPerCategoria.
+function gruppoAmmissione(categoria, sessoIt) {
+  const c = (categoria || '').toUpperCase()
+  if (c.includes('RAGAZZI')) {
+    if (sessoIt === 'Maschi' && c.includes('1°')) return 'R14'
+    return 'R'
+  }
+  if (c.includes('JUNIORES')) return 'JUNIORES'
+  if (c.includes('CADETTI'))  return 'CADETTI'
+  if (c.includes('SENIORES')) return 'SENIORES'
+  return c.trim()   // fallback: categoria non riconosciuta, usata così com'è
+}
+
 // ── Top N dal regolamento (invece del valore manuale) ────────────────────────
-// graduatoriaLimiti ha chiavi "dist|SPEC|Sesso|CATEGORIA" (es.
+// graduatoriaLimiti ha chiavi "dist|SPEC|Sesso|GRUPPO" (es.
 // "400|STILE|Female|SENIORES"), prodotte da parseGraduatoriaLimitiPerCategoria
 // leggendo il PDF del regolamento (una tabella distinta per categoria).
 
@@ -338,11 +358,14 @@ export default function GradPosizioni() {
       return true
     }
 
-    // Raggruppa per (gara, categoria, sesso)
+    // Raggruppa per (gara, GRUPPO di ammissione, sesso) — non per anno: la
+    // classifica e il Top N sono condivisi tra le annate dello stesso gruppo
+    // (es. RAGAZZI 2° e 3° Anno maschi competono insieme in un'unica "R").
     const bucket = new Map()
     for (const r of allRows) {
       if (!ok(r)) continue
-      const key = `${r._gara}||${r._categoria}||${r._sesso}`
+      const gruppo = gruppoAmmissione(r._categoria, r._sesso)
+      const key = `${r._gara}||${gruppo}||${r._sesso}`
       if (!bucket.has(key)) bucket.set(key, [])
       bucket.get(key).push(r)
     }
@@ -351,9 +374,9 @@ export default function GradPosizioni() {
     const seen   = new Set()
 
     for (const [key, righe] of bucket) {
-      const [gara, cat, sx] = key.split('||')
-      const topN    = getTopNForGara(gara, sx, cat, graduatoriaLimiti, topNManuale)
-      const topNMax = topNMaxFor(topN, cat)   // Top N + 20% (R/J/C) o +50% (S), da regolamento
+      const [gara, gruppo, sx] = key.split('||')
+      const topN    = getTopNForGara(gara, sx, gruppo, graduatoriaLimiti, topNManuale)
+      const topNMax = topNMaxFor(topN, gruppo)   // Top N + 20% (R/J/C) o +50% (S), da regolamento
       const sorted  = [...righe].sort((a, b) => posN(a) - posN(b))
 
       for (const r of sorted) {
@@ -369,7 +392,7 @@ export default function GradPosizioni() {
           POS:       String(r.Pos || ''),
           ATLETA:    atleta,
           SEZIONE:   '—',
-          CATEGORIA: cat,
+          CATEGORIA: (r._categoria || '').trim(),   // categoria reale dell'atleta (non il gruppo di raggruppamento)
           SESSO:     sx,
           GARA:      gara,
           VASCA:     r.Vasca || '',

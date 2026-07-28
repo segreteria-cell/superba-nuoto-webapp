@@ -591,23 +591,28 @@ export function parseGraduatoriaLimiti(text) {
 // ── parse tabelle graduatoria limiti PER CATEGORIA ───────────────────────────
 // Il "Campionato Italiano di Categoria" ha 4 tabelle separate (Ragazzi,
 // Juniores, Cadetti, Seniores), ciascuna con numeri diversi per gara/sesso.
-// La tabella Ragazzi maschi ha inoltre 2 sotto-colonne: "R14" (RAGAZZI 1° Anno,
-// i più giovani) e "R1-R2" (RAGAZZI 2° Anno + RAGAZZI 3° Anno, stesso numero
-// per entrambi). Chiave risultato: "dist|SPEC|Sesso|CATEGORIA".
+// La graduatoria (piazzamento) NON si fa per "anno" ma per "gruppo di
+// ammissione": solo i maschi Ragazzi hanno due classifiche separate — "R14"
+// (1° Anno, i più giovani) e "R" (2°+3° Anno insieme, stesso Top N
+// condiviso); le femmine Ragazzi hanno un'unica classifica "R" (1°+2° Anno
+// insieme). Juniores (1°+2° Anno) è sempre un'unica classifica "JUNIORES"
+// per entrambi i sessi. Chiave risultato: "dist|SPEC|Sesso|GRUPPO", dove
+// GRUPPO ∈ {R14, R, JUNIORES, CADETTI, SENIORES} (vedi gruppoAmmissione in
+// GradPosizioni.jsx, che deve usare la stessa convenzione per il bucketing).
 
-const RAGAZZI_FEMMINE  = ['RAGAZZI 1° Anno', 'RAGAZZI 2° Anno']
-const RAGAZZI_R14      = ['RAGAZZI 1° Anno']
-const RAGAZZI_R1R2     = ['RAGAZZI 2° Anno', 'RAGAZZI 3° Anno']
-const CAT_JUNIORES     = ['JUNIORES 1° Anno', 'JUNIORES 2° Anno']
-const CAT_CADETTI      = ['CADETTI']
-const CAT_SENIORES     = ['SENIORES']
+const RAGAZZI_FEMMINE  = 'R'
+const RAGAZZI_R14      = 'R14'
+const RAGAZZI_R1R2     = 'R'
+const CAT_JUNIORES     = 'JUNIORES'
+const CAT_CADETTI      = 'CADETTI'
+const CAT_SENIORES     = 'SENIORES'
 
 export function parseGraduatoriaLimitiPerCategoria(text) {
   const limiti = {}
 
-  function addEntry(dist, spec, sesso, categorie, val) {
+  function addEntry(dist, spec, sesso, gruppo, val) {
     if (val === undefined || isNaN(val)) return
-    for (const cat of categorie) limiti[`${dist}|${spec}|${sesso}|${cat}`] = val
+    limiti[`${dist}|${spec}|${sesso}|${gruppo}`] = val
   }
 
   const RE_ROW3 = /^(\d+)\s*m?\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/i
