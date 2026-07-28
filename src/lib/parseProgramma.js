@@ -587,3 +587,77 @@ export function parseGraduatoriaLimiti(text) {
   }
   return limiti
 }
+
+// ── parse tabelle graduatoria limiti PER CATEGORIA ───────────────────────────
+// Il "Campionato Italiano di Categoria" ha 4 tabelle separate (Ragazzi,
+// Juniores, Cadetti, Seniores), ciascuna con numeri diversi per gara/sesso.
+// La tabella Ragazzi maschi ha inoltre 2 sotto-colonne: "R14" (RAGAZZI 1° Anno,
+// i più giovani) e "R1-R2" (RAGAZZI 2° Anno + RAGAZZI 3° Anno, stesso numero
+// per entrambi). Chiave risultato: "dist|SPEC|Sesso|CATEGORIA".
+
+const RAGAZZI_FEMMINE  = ['RAGAZZI 1° Anno', 'RAGAZZI 2° Anno']
+const RAGAZZI_R14      = ['RAGAZZI 1° Anno']
+const RAGAZZI_R1R2     = ['RAGAZZI 2° Anno', 'RAGAZZI 3° Anno']
+const CAT_JUNIORES     = ['JUNIORES 1° Anno', 'JUNIORES 2° Anno']
+const CAT_CADETTI      = ['CADETTI']
+const CAT_SENIORES     = ['SENIORES']
+
+export function parseGraduatoriaLimitiPerCategoria(text) {
+  const limiti = {}
+
+  function addEntry(dist, spec, sesso, categorie, val) {
+    if (val === undefined || isNaN(val)) return
+    for (const cat of categorie) limiti[`${dist}|${spec}|${sesso}|${cat}`] = val
+  }
+
+  const RE_ROW3 = /^(\d+)\s*m?\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/i
+  const RE_ROW2 = /^(\d+)\s*m?\s+(stile\s+libero|dorso|rana|farfalla|misti)\s+(\d+)\s+(\d+)\s*$/i
+
+  // Trova tutte le intestazioni di categoria presenti, ordinate per posizione
+  // nel testo: ogni sezione viene delimitata dall'inizio della successiva (non
+  // da una finestra di caratteri fissa), per evitare che una sezione "sconfini"
+  // nella tabella della categoria seguente quando sono ravvicinate nel PDF.
+  const HEADINGS = [
+    { key: 'ragazzi', re: /Categoria\W{0,3}Ragazzi/i },
+    { key: 'junior',  re: /Categoria\W{0,3}Junior/i },
+    { key: 'cadetti', re: /Categoria\W{0,3}Cadetti/i },
+    { key: 'senior',  re: /Categoria\W{0,3}Senior/i },
+  ]
+  const found = HEADINGS
+    .map(h => ({ ...h, idx: text.search(h.re) }))
+    .filter(h => h.idx !== -1)
+    .sort((a, b) => a.idx - b.idx)
+
+  for (let i = 0; i < found.length; i++) {
+    const { key, idx } = found[i]
+    const idxAmm = text.indexOf('graduatorie in vasca', idx)
+    if (idxAmm === -1) continue
+    // Fine sezione = inizio della prossima intestazione trovata, o un margine
+    // ampio se è l'ultima sezione del documento.
+    const idxNext = (i + 1 < found.length) ? found[i + 1].idx : (idxAmm + 4000)
+    const block   = text.slice(idxAmm, idxNext)
+    const lines   = block.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean)
+
+    if (key === 'ragazzi') {
+      for (const line of lines) {
+        const m = RE_ROW3.exec(line)
+        if (!m) continue
+        const dist = parseInt(m[1], 10), spec = normSpec(m[2])
+        addEntry(dist, spec, 'Female', RAGAZZI_FEMMINE, Number(m[3]))
+        addEntry(dist, spec, 'Male',   RAGAZZI_R14,     Number(m[4]))
+        addEntry(dist, spec, 'Male',   RAGAZZI_R1R2,    Number(m[5]))
+      }
+    } else {
+      const cats = key === 'junior' ? CAT_JUNIORES : key === 'cadetti' ? CAT_CADETTI : CAT_SENIORES
+      for (const line of lines) {
+        const m = RE_ROW2.exec(line)
+        if (!m) continue
+        const dist = parseInt(m[1], 10), spec = normSpec(m[2])
+        addEntry(dist, spec, 'Female', cats, Number(m[3]))
+        addEntry(dist, spec, 'Male',   cats, Number(m[4]))
+      }
+    }
+  }
+
+  return limiti
+}

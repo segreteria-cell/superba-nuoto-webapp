@@ -3,7 +3,7 @@ import LZString from 'lz-string'
 import * as XLSX from 'xlsx'
 import { ref as rtdbRef, get as rtdbGet, set as rtdbSet } from 'firebase/database'
 import { rtdb } from '../lib/firebase'
-import { extractPdfText, parseGraduatoriaLimiti } from '../lib/parseProgramma'
+import { extractPdfText, parseGraduatoriaLimitiPerCategoria } from '../lib/parseProgramma'
 
 // ── Firebase helpers ──────────────────────────────────────────────────────────
 
@@ -99,16 +99,16 @@ const REG_HA_GRAD = {
 
 const DEFAULT_TOP_N = 30
 
-// Soglie recupero per rinunce (FIN +5): 30→41 | 20/19→30 | 15→23 | 14→22 | 13/12→21 | 10→19
-const RECUPERO_MAP = { 30:41, 20:30, 19:30, 15:23, 14:22, 13:21, 12:21, 10:19 }
-const DEFAULT_RECUPERO_EXTRA = 11
+// Margine di recupero per rinuncia, come da regolamento FIN: +20% del Top N
+// per le categorie Ragazzi/Juniores/Cadetti, +50% per i Seniores (non un
+// margine fisso). Risultano iscrivibili come riserve tutti gli atleti dalla
+// posizione Top N+1 fino a questo massimo.
+function marginPctForCategoria(categoria) {
+  return (categoria || '').toUpperCase().includes('SENIORES') ? 0.5 : 0.2
+}
 
-function getRecuperoMax(topN) {
-  if (RECUPERO_MAP[topN] !== undefined) return RECUPERO_MAP[topN]
-  const cands = Object.entries(RECUPERO_MAP)
-    .map(([k, v]) => [Math.abs(Number(k) - topN), Number(v)])
-    .sort((a, b) => a[0] - b[0])
-  return cands.length && cands[0][0] <= 3 ? cands[0][1] : topN + DEFAULT_RECUPERO_EXTRA
+function topNMaxFor(topN, categoria) {
+  return topN + Math.round(topN * marginPctForCategoria(categoria))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -146,8 +146,9 @@ function compKey(comp) {
 }
 
 // ── Top N dal regolamento (invece del valore manuale) ────────────────────────
-// graduatoriaLimiti ha chiavi "dist|SPEC|Sesso" (es. "400|STILE|Female"),
-// prodotte da parseGraduatoriaLimiti(text) leggendo il PDF del regolamento.
+// graduatoriaLimiti ha chiavi "dist|SPEC|Sesso|CATEGORIA" (es.
+// "400|STILE|Female|SENIORES"), prodotte da parseGraduatoriaLimitiPerCategoria
+// leggendo il PDF del regolamento (una tabella distinta per categoria).
 
 const SESSO_IT_TO_EN = { Maschi: 'Male', Femmine: 'Female' }
 
@@ -166,14 +167,15 @@ function distFromGara(gara) {
   return m ? parseInt(m[1], 10) : 0
 }
 
-// Top N per la gara/sesso indicati: se il regolamento (graduatoriaLimiti) lo
-// specifica lo usa, altrimenti ricade sul valore manuale (fallback).
-function getTopNForGara(gara, sessoIt, limiti, fallback) {
+// Top N per la gara/sesso/categoria indicati: se il regolamento
+// (graduatoriaLimiti) lo specifica lo usa, altrimenti ricade sul valore
+// manuale (fallback).
+function getTopNForGara(gara, sessoIt, categoria, limiti, fallback) {
   const dist = distFromGara(gara)
   const spec = specKeyFromGara(gara)
   const sessoEn = SESSO_IT_TO_EN[sessoIt] || sessoIt
   if (dist && spec) {
-    const val = limiti[`${dist}|${spec}|${sessoEn}`]
+    const val = limiti[`${dist}|${spec}|${sessoEn}|${(categoria || '').trim()}`]
     if (val !== undefined && val !== null && !isNaN(val)) return val
   }
   return fallback
@@ -245,7 +247,7 @@ export default function GradPosizioni() {
     cloudLoadPdf(reg.id).then(async base64 => {
       if (!base64) { setGraduatoriaLimiti({}); return }
       const text = await extractPdfText(base64)
-      setGraduatoriaLimiti(parseGraduatoriaLimiti(text))
+      setGraduatoriaLimiti(parseGraduatoriaLimitiPerCategoria(text))
     }).catch(e => { console.warn('Errore lettura limiti regolamento:', e); setGraduatoriaLimiti({}) })
       .finally(() => setLimitiLoading(false))
   }, [competizione, regolamenti])
@@ -350,13 +352,13 @@ export default function GradPosizioni() {
 
     for (const [key, righe] of bucket) {
       const [gara, cat, sx] = key.split('||')
-      const topN      = getTopNForGara(gara, sx, graduatoriaLimiti, topNManuale)
-      const topNExtra = topN + 5
-      const sorted    = [...righe].sort((a, b) => posN(a) - posN(b))
+      const topN    = getTopNForGara(gara, sx, cat, graduatoriaLimiti, topNManuale)
+      const topNMax = topNMaxFor(topN, cat)   // Top N + 20% (R/J/C) o +50% (S), da regolamento
+      const sorted  = [...righe].sort((a, b) => posN(a) - posN(b))
 
       for (const r of sorted) {
         const p = posN(r)
-        if (p > topNExtra) break
+        if (p > topNMax) break
         const atleta = (r.Atleta || '').trim()
         const dk     = `${atleta.toLowerCase()}|${gara}`
         if (seen.has(dk)) continue
@@ -375,6 +377,7 @@ export default function GradPosizioni() {
           PTFINA:    r.PtFINA || '',
           DATA:      r.Data || '',
           TOP_N:     String(topN),
+          POS_MAX:   String(topNMax),
           _extra:    isExtra,
           _riserva:  isExtra,
           _estero:   false,
@@ -501,51 +504,15 @@ export default function GradPosizioni() {
       .sort((a, b) => a.ATLETA.localeCompare(b.ATLETA, 'it')),
   [gradRows])
 
-  const tutteRiserve = useMemo(() => {
-    const present = new Set(gradRows.filter(r => r._extra || r._riserva).map(r => `${r._atleta_key}|${r._gara_key}`))
-    const base = gradRows.filter(r => r._extra || r._riserva)
-
-    const catAmmesse = REG_CAT_AMMESSE[competizione] || { Femmine: [], Maschi: [] }
-    const vascaComp  = REG_VASCA[competizione] || ''
-
-    // Candidati aggiuntivi da allRows (oltre top_n+5, fino a max_recupero)
-    // Top N per gara/sesso: dal regolamento se disponibile, altrimenti manuale.
-    const extra = []
-    const seenAD = new Set(gradRows.filter(r => !r._extra && !r._riserva).map(r => `${r._atleta_key}|${r._gara_key}`))
-
-    for (const r of allRows) {
-      if (!isSuperba(r)) continue
-      if (vascaComp && normVasca(r.Vasca) !== vascaComp) continue
-      const cat = (r._categoria || '').trim()
-      const sx  = r._sesso || ''
-      const ammesse = catAmmesse[sx] || []
-      if (ammesse.length > 0 && !ammesse.includes(cat)) continue
-      const topN       = getTopNForGara(r._gara, sx, graduatoriaLimiti, topNManuale)
-      const topNExtra  = topN + 5
-      const maxRecupero = getRecuperoMax(topN)
-      const p = posN(r)
-      if (p <= topNExtra || p > maxRecupero) continue
-      const atleta = (r.Atleta || '').trim()
-      const dk = `${atleta.toLowerCase()}|${r._gara}`
-      if (present.has(dk) || seenAD.has(dk)) continue
-      extra.push({
-        POS: String(r.Pos || ''), TOP_N: String(topN), POS_MAX: String(maxRecupero),
-        ATLETA: atleta, CATEGORIA: cat, SESSO: sx,
-        GARA: r._gara, VASCA: r.Vasca || '', TEMPO: r.Tempo || '', PTFINA: r.PtFINA || '',
-        _atleta_key: atleta.toLowerCase(), _gara_key: r._gara,
-        _extra_candidato: true,
-      })
-    }
-
-    // Merge + dedup
-    const seen2 = new Set()
-    const merged = []
-    for (const r of [...base, ...extra]) {
-      const dk = `${r._atleta_key}|${r._gara_key}`
-      if (!seen2.has(dk)) { seen2.add(dk); merged.push(r) }
-    }
-    return merged.sort((a, b) => a.ATLETA.localeCompare(b.ATLETA, 'it'))
-  }, [gradRows, allRows, competizione, topNManuale, graduatoriaLimiti])
+  // Con il margine unico da regolamento (Top N + 20%/50%, calcolato già in
+  // handleCalcola per ogni bucket gara/categoria/sesso), gradRows contiene già
+  // TUTTE le riserve iscrivibili per recupero: non serve più cercare candidati
+  // aggiuntivi oltre un secondo margine fisso.
+  const tutteRiserve = useMemo(() =>
+    gradRows
+      .filter(r => r._extra || r._riserva)
+      .sort((a, b) => a.ATLETA.localeCompare(b.ATLETA, 'it')),
+  [gradRows])
 
   // ── Contatori badge popup ─────────────────────────────────────────────────
 
@@ -612,11 +579,11 @@ export default function GradPosizioni() {
             {limitiLoading
               ? '⏳ Lettura numero ammessi dal regolamento...'
               : Object.keys(graduatoriaLimiti).length > 0
-                ? `📄 Ammessi da regolamento: ${Object.keys(graduatoriaLimiti).length} combinazioni gara/sesso`
+                ? `📄 Ammessi da regolamento: ${Object.keys(graduatoriaLimiti).length} combinazioni gara/sesso/categoria`
                 : '⚠ Nessun numero ammessi letto dal regolamento (uso solo il fallback manuale)'}
           </span>
           <span className="text-xs text-sb-muted">
-            Solo atleti Superba  |  Vasca: {REG_VASCA[competizione] || '?'}m  |  Riserve: Top N +5
+            Solo atleti Superba  |  Vasca: {REG_VASCA[competizione] || '?'}m  |  Riserve: Top N +20% (R/J/C) / +50% (S)
           </span>
         </div>
       </div>
