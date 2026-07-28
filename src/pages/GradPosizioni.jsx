@@ -411,7 +411,7 @@ export default function GradPosizioni() {
     const topNInfo = nDaReg > 0
       ? `Top N: da regolamento (${nDaReg} voci, fallback manuale ${topNManuale})`
       : `Top N: ${topNManuale} (manuale — regolamento non caricato o senza tabella ammessi)`
-    setBadge(`${nAD} qualificati  ·  ${nRis} riserve pari tempo  ·  ${nAtl} atleti  ·  ${topNInfo}  ·  ${nGare} combinazioni gara/cat`)
+    setBadge(`${nAD} ammessi di diritto  ·  ${nRis} iscrivibili  ·  ${nAtl} atleti  ·  ${topNInfo}  ·  ${nGare} combinazioni gara/cat`)
     setError('')
   }, [allRows, competizione, topNManuale, graduatoriaLimiti])
 
@@ -460,9 +460,9 @@ export default function GradPosizioni() {
   function statoLabel(r) {
     if (r._rinuncia)      return '✅ Per rinuncia'
     if (r._rinuncia_grad) return '🚫 Rinuncia'
-    if (r._extra || r._riserva) return '⏳ Riserva'
+    if (r._extra || r._riserva) return '📝 Iscrivibile'
     if (r._estero)        return '🌍 Estero'
-    return '✔ Di diritto'
+    return '✔ Ammesso di diritto'
   }
 
   // ── Export XLSX ───────────────────────────────────────────────────────────
@@ -622,8 +622,8 @@ export default function GradPosizioni() {
         <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-sb-sep">
           {[
             ['#D1C4E9', '#311B92', '🏆 Top 3'],
-            ['#EDE7F6', '#5C6BC0', 'Qualificati'],
-            ['#E8EAF6', '#5C6BC0', 'Riserve pari tempo (+5)'],
+            ['#EDE7F6', '#5C6BC0', 'Ammessi di diritto'],
+            ['#E8EAF6', '#5C6BC0', 'Iscrivibili (Top N +20%/50%)'],
             ['#F3E5F5', '#6A1B9A', '🌍 Estero GRAD'],
             ['#E8F5E9', '#2E7D32', '✅ Entrato per rinuncia'],
             ['#FFEBEE', '#B71C1C', '🚫 Rinuncia avente diritto'],
@@ -845,9 +845,9 @@ function PopupRinunce({ aventiDiritto, tutteRiserve, rinunceGrad, rinunceB,
           {popupTab === 'B' && (
             <div className="flex flex-col flex-1 gap-2 pt-3">
               <p className="text-gray-300 text-xs">
-                ℹ Spunta gli atleti che entrano per rinuncia. Verranno aggiunti in graduatoria (verde).
+                ℹ Spunta gli atleti iscrivibili che entrano per rinuncia. Verranno aggiunti in graduatoria (verde).
                 Rimuovi la spunta per annullare.{' '}
-                Soglie (FIN +5): 30→41 | 20/19→30 | 15→23 | 14→22 | 12/13→21 | 10→19
+                Soglia da regolamento: Top N +20% (Ragazzi/Juniores/Cadetti) o +50% (Seniores)
               </p>
               <div className="flex-1 overflow-auto rounded-lg border border-orange-900 bg-white">
                 <table className="w-full text-xs border-collapse">
@@ -860,7 +860,7 @@ function PopupRinunce({ aventiDiritto, tutteRiserve, rinunceGrad, rinunceB,
                   </thead>
                   <tbody>
                     {tutteRiserve.length === 0 ? (
-                      <tr><td colSpan={11} className="text-center py-8 text-gray-400">Nessuna riserva disponibile</td></tr>
+                      <tr><td colSpan={11} className="text-center py-8 text-gray-400">Nessun iscrivibile disponibile</td></tr>
                     ) : tutteRiserve.map((r, i) => {
                       const conf = selB[i]
                       return (
